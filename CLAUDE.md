@@ -18,7 +18,7 @@ bun run build            # Build MCP server (tsup → dist/)
 bun run dev              # Build in watch mode
 bun socket               # Start WebSocket relay server (port 3055)
 bun run start            # Run built MCP server
-bun setup                # Full setup (install + configure .cursor/mcp.json)
+bun setup                # Full setup (install + write .cursor/mcp.json + .mcp.json)
 ```
 
 There is no test suite or linter configured.
@@ -43,9 +43,28 @@ Runs inside Figma. `code.js` is the plugin main thread handling 30+ commands via
 - **Reconnection**: WebSocket auto-reconnects after 2 seconds on disconnect.
 - **Zod validation**: All tool parameters are validated with Zod schemas.
 
-## Local Development Setup
+## Setup
 
-1. `bun socket` in one terminal (WebSocket relay)
-2. In Figma: Plugins → Development → Link existing plugin → select `src/cursor_mcp_plugin/manifest.json`
-3. Configure `.cursor/mcp.json` to point to local `src/talk_to_figma_mcp/server.ts`
-4. Run plugin in Figma, join a channel, then use tools from Cursor
+1. Run `bun setup` — installs dependencies and writes MCP config for both Cursor (`.cursor/mcp.json`) and Claude Code (`.mcp.json`)
+2. `bun socket` in one terminal (WebSocket relay)
+3. In Figma: Plugins → Development → Link existing plugin → select `src/cursor_mcp_plugin/manifest.json`
+4. Run plugin in Figma, join a channel, then use tools from Cursor or Claude Code
+
+The MCP config written by `bun setup` uses the published package:
+
+```json
+{
+  "mcpServers": {
+    "TalkToFigma": {
+      "command": "bunx",
+      "args": ["cursor-talk-to-figma-mcp@latest"]
+    }
+  }
+}
+```
+
+You can also add it manually for Claude Code via the CLI:
+
+```bash
+claude mcp add TalkToFigma -- bunx cursor-talk-to-figma-mcp@latest
+```
