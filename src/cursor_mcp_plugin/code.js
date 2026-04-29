@@ -57,6 +57,24 @@ async function sendProgressUpdate(
 // Show UI
 figma.showUI(__html__, { width: 350, height: 600 });
 
+// Initialize anonymous analytics client_id (persisted via clientStorage)
+(async () => {
+  try {
+    let clientId = await figma.clientStorage.getAsync("analyticsClientId");
+    if (!clientId) {
+      clientId =
+        Date.now().toString(36) +
+        "-" +
+        Math.random().toString(36).slice(2, 10) +
+        Math.random().toString(36).slice(2, 10);
+      await figma.clientStorage.setAsync("analyticsClientId", clientId);
+    }
+    figma.ui.postMessage({ type: "analytics-client-id", clientId });
+  } catch (e) {
+    console.error("analytics init failed:", e);
+  }
+})();
+
 // Plugin commands from UI
 figma.ui.onmessage = async (msg) => {
   switch (msg.type) {
@@ -73,7 +91,6 @@ figma.ui.onmessage = async (msg) => {
       // Execute commands received from UI (which gets them from WebSocket)
       try {
         const result = await handleCommand(msg.command, msg.params);
-        // Send result back to UI
         figma.ui.postMessage({
           type: "command-result",
           id: msg.id,
