@@ -254,6 +254,14 @@ async function handleCommand(command, params) {
       return await setFocus(params);
     case "set_selections":
       return await setSelections(params);
+    case "set_image_fill":
+      return await setImageFill(params);
+    case "rename_node":
+      return await renameNode(params);
+    case "create_section":
+      return await createSection(params);
+    case "set_parent":
+      return await setParent(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -1025,6 +1033,222 @@ async function setStrokeColor(params) {
     name: node.name,
     strokes: node.strokes,
     strokeWeight: "strokeWeight" in node ? node.strokeWeight : undefined,
+  };
+}
+
+async function setImageFill(params) {
+  const { nodeId, imageBase64, scaleMode = "FILL" } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+
+  if (!imageBase64) {
+    throw new Error("Missing imageBase64 parameter");
+  }
+
+  const validScaleModes = ["FILL", "FIT", "CROP", "TILE"];
+  if (validScaleModes.indexOf(scaleMode) === -1) {
+    throw new Error(
+      `Invalid scaleMode: ${scaleMode}. Must be one of: ${validScaleModes.join(", ")}`
+    );
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found with ID: ${nodeId}`);
+  }
+
+  if (!("fills" in node)) {
+    throw new Error(`Node does not support fills: ${nodeId}`);
+  }
+
+  const bytes = base64ToUint8Array(imageBase64);
+
+  let image;
+  try {
+    image = figma.createImage(bytes);
+  } catch (error) {
+    throw new Error(
+      `Figma rejected the image (supported: PNG/JPG/GIF/WEBP up to 4096x4096): ${error.message}`
+    );
+  }
+
+  node.fills = [
+    {
+      type: "IMAGE",
+      imageHash: image.hash,
+      scaleMode: scaleMode,
+    },
+  ];
+
+  let imageWidth;
+  let imageHeight;
+  try {
+    const size = await image.getSizeAsync();
+    imageWidth = size.width;
+    imageHeight = size.height;
+  } catch (sizeError) {
+    // Size lookup is informational only
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    imageHash: image.hash,
+    scaleMode: scaleMode,
+    imageWidth: imageWidth,
+    imageHeight: imageHeight,
+  };
+}
+
+// Decode base64 in the plugin sandbox, where atob is not available
+function base64ToUint8Array(base64) {
+  if (typeof figma.base64Decode === "function") {
+    return figma.base64Decode(base64);
+  }
+
+  const base64Chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const clean = base64.replace(/[^A-Za-z0-9+/]/g, "");
+  const length = clean.length;
+  const bytes = new Uint8Array(Math.floor((length * 3) / 4));
+
+  let byteIndex = 0;
+  for (let i = 0; i < length; i += 4) {
+    const a = base64Chars.indexOf(clean[i]);
+    const b = base64Chars.indexOf(clean[i + 1]);
+    const c = base64Chars.indexOf(clean[i + 2]);
+    const d = base64Chars.indexOf(clean[i + 3]);
+
+    bytes[byteIndex++] = (a << 2) | (b >> 4);
+    if (c !== -1) bytes[byteIndex++] = ((b & 15) << 4) | (c >> 2);
+    if (d !== -1) bytes[byteIndex++] = ((c & 3) << 6) | d;
+  }
+
+  return bytes.slice(0, byteIndex);
+}
+
+async function renameNode(params) {
+  const { nodeId, name } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+
+  if (name === undefined || name === null) {
+    throw new Error("Missing name parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found with ID: ${nodeId}`);
+  }
+
+  const previousName = node.name;
+  try {
+    node.name = String(name);
+  } catch (error) {
+    throw new Error(`Cannot rename node: ${error.message}`);
+  }
+
+  return {
+    id: node.id,
+    previousName: previousName,
+    name: node.name,
+  };
+}
+
+async function createSection(params) {
+  const {
+    x = 0,
+    y = 0,
+    width = 100,
+    height = 100,
+    name = "Section",
+  } = params || {};
+
+  const section = figma.createSection();
+  section.name = name;
+  section.x = x;
+  section.y = y;
+  section.resizeWithoutConstraints(width, height);
+
+  return {
+    id: section.id,
+    name: section.name,
+    x: section.x,
+    y: section.y,
+    width: section.width,
+    height: section.height,
+  };
+}
+
+async function setParent(params) {
+  const { nodeId, parentId, x, y, index } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+
+  if (!parentId) {
+    throw new Error("Missing parentId parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found with ID: ${nodeId}`);
+  }
+
+  const parentNode = await figma.getNodeByIdAsync(parentId);
+  if (!parentNode) {
+    throw new Error(`Parent node not found with ID: ${parentId}`);
+  }
+
+  if (!("appendChild" in parentNode)) {
+    throw new Error(`Parent node does not support children: ${parentId}`);
+  }
+
+  // Refuse to create a cycle
+  let ancestor = parentNode;
+  while (ancestor) {
+    if (ancestor.id === node.id) {
+      throw new Error("Cannot move a node into its own subtree");
+    }
+    ancestor = ancestor.parent;
+  }
+
+  // Capture the absolute position so it can be preserved across the move
+  const hasAbsolute = "absoluteTransform" in node;
+  const absoluteX = hasAbsolute ? node.absoluteTransform[0][2] : undefined;
+  const absoluteY = hasAbsolute ? node.absoluteTransform[1][2] : undefined;
+
+  if (index !== undefined) {
+    parentNode.insertChild(index, node);
+  } else {
+    parentNode.appendChild(node);
+  }
+
+  if (x !== undefined && y !== undefined) {
+    node.x = x;
+    node.y = y;
+  } else if (hasAbsolute && "x" in node) {
+    const parentAbsoluteX =
+      "absoluteTransform" in parentNode ? parentNode.absoluteTransform[0][2] : 0;
+    const parentAbsoluteY =
+      "absoluteTransform" in parentNode ? parentNode.absoluteTransform[1][2] : 0;
+    node.x = absoluteX - parentAbsoluteX;
+    node.y = absoluteY - parentAbsoluteY;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    parentId: parentNode.id,
+    parentName: parentNode.name,
+    x: "x" in node ? node.x : undefined,
+    y: "y" in node ? node.y : undefined,
+    index: parentNode.children.indexOf(node),
   };
 }
 

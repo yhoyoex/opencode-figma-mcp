@@ -153,6 +153,7 @@ The MCP server provides the following tools for interacting with Figma:
 
 - `create_rectangle` - Create a new rectangle with position, size, and optional name
 - `create_frame` - Create a new frame with position, size, and optional name
+- `create_section` - Create a section to group related content on the canvas
 - `create_text` - Create a new text node with customizable font properties
 
 ### Modifying text content
@@ -174,6 +175,7 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_fill_color` - Set the fill color of a node (RGBA)
 - `set_stroke_color` - Set the stroke color and weight of a node
 - `set_corner_radius` - Set the corner radius of a node with optional per-corner control
+- `set_image_fill` - Fill a node with an image from a local file path, URL, or base64 data (FILL, FIT, CROP, or TILE)
 
 ### Layout & Organization
 
@@ -182,6 +184,8 @@ The MCP server provides the following tools for interacting with Figma:
 - `delete_node` - Delete a node
 - `delete_multiple_nodes` - Delete multiple nodes at once efficiently
 - `clone_node` - Create a copy of an existing node with optional position offset
+- `rename_node` - Rename a node
+- `set_parent` - Move a node into a new parent (section, frame or group), preserving its absolute position by default
 
 ### Components & Styles
 

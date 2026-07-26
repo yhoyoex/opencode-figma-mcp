@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
+import { readFile } from "fs/promises";
 
 // Define TypeScript interfaces for Figma responses
 interface FigmaResponse {
@@ -2652,7 +2653,11 @@ type FigmaCommand =
   | "set_default_connector"
   | "create_connections"
   | "set_focus"
-  | "set_selections";
+  | "set_selections"
+  | "set_image_fill"
+  | "rename_node"
+  | "create_section"
+  | "set_parent";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -2800,6 +2805,29 @@ type CommandParams = {
   };
   set_selections: {
     nodeIds: string[];
+  };
+  set_image_fill: {
+    nodeId: string;
+    imageBase64: string;
+    scaleMode?: "FILL" | "FIT" | "CROP" | "TILE";
+  };
+  rename_node: {
+    nodeId: string;
+    name: string;
+  };
+  create_section: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    name?: string;
+  };
+  set_parent: {
+    nodeId: string;
+    parentId: string;
+    x?: number;
+    y?: number;
+    index?: number;
   };
 
 };
@@ -3032,6 +3060,231 @@ function sendCommandToFigma(
     ws.send(JSON.stringify(request));
   });
 }
+
+// Set Image Fill Tool
+server.tool(
+  "set_image_fill",
+  "Fill a node in Figma with an image from a local file path, a URL, or base64 data (replaces the node's existing fills)",
+  {
+    nodeId: z.string().describe("The ID of the node to fill"),
+    imagePath: z
+      .string()
+      .optional()
+      .describe(
+        "Absolute path to a local image file, read by the MCP server (preferred: keeps image bytes out of the model context)"
+      ),
+    imageUrl: z
+      .string()
+      .optional()
+      .describe(
+        "Image URL, fetched by the MCP server (the Figma plugin cannot fetch arbitrary domains itself)"
+      ),
+    imageBase64: z
+      .string()
+      .optional()
+      .describe(
+        "Base64-encoded image data, with or without a data: URI prefix (only when the image exists nowhere else)"
+      ),
+    scaleMode: z
+      .enum(["FILL", "FIT", "CROP", "TILE"])
+      .optional()
+      .describe("How the image fills the node (default: FILL)"),
+  },
+  async ({ nodeId, imagePath, imageUrl, imageBase64, scaleMode }: any) => {
+    try {
+      const sources = [imagePath, imageUrl, imageBase64].filter(
+        (source) => source !== undefined && source !== ""
+      );
+      if (sources.length !== 1) {
+        throw new Error("Provide exactly one of imagePath, imageUrl or imageBase64");
+      }
+
+      let base64Data: string;
+      if (imagePath) {
+        base64Data = (await readFile(imagePath)).toString("base64");
+      } else if (imageUrl) {
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image URL (HTTP ${response.status})`);
+        }
+        base64Data = Buffer.from(await response.arrayBuffer()).toString("base64");
+      } else {
+        base64Data = imageBase64.replace(/^data:[^;,]+;base64,/, "");
+      }
+
+      // Keep well under the websocket relay's default 16MB frame limit
+      if (base64Data.length > 12 * 1024 * 1024) {
+        throw new Error(
+          "Image is too large to send over the relay (~9MB binary max); downscale it first"
+        );
+      }
+
+      const result = await sendCommandToFigma("set_image_fill", {
+        nodeId,
+        imageBase64: base64Data,
+        scaleMode: scaleMode || "FILL",
+      });
+      const typedResult = result as {
+        name: string;
+        imageHash: string;
+        imageWidth?: number;
+        imageHeight?: number;
+      };
+      const sizeInfo = typedResult.imageWidth
+        ? ` (${typedResult.imageWidth}x${typedResult.imageHeight})`
+        : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Set image fill of node "${typedResult.name}"${sizeInfo} with scale mode ${scaleMode || "FILL"
+              }, imageHash: ${typedResult.imageHash}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting image fill: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Rename Node Tool
+server.tool(
+  "rename_node",
+  "Rename a node in Figma",
+  {
+    nodeId: z.string().describe("The ID of the node to rename"),
+    name: z.string().describe("The new name for the node"),
+  },
+  async ({ nodeId, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("rename_node", { nodeId, name });
+      const typedResult = result as { previousName: string; name: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Renamed node from "${typedResult.previousName}" to "${typedResult.name}"`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Section Tool
+server.tool(
+  "create_section",
+  "Create a section in Figma to group related content on the canvas",
+  {
+    x: z.number().describe("X position"),
+    y: z.number().describe("Y position"),
+    width: z.number().describe("Width of the section"),
+    height: z.number().describe("Height of the section"),
+    name: z.string().optional().describe("Optional name for the section"),
+  },
+  async ({ x, y, width, height, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_section", {
+        x,
+        y,
+        width,
+        height,
+        name: name || "Section",
+      });
+      const typedResult = result as { name: string; id: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created section "${typedResult.name}" with ID: ${typedResult.id}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating section: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Parent Tool
+server.tool(
+  "set_parent",
+  "Move a node into a new parent node (e.g. a section, frame or group). Preserves the node's absolute position unless x/y are provided",
+  {
+    nodeId: z.string().describe("The ID of the node to move"),
+    parentId: z
+      .string()
+      .describe("The ID of the new parent node (must support children, e.g. a section, frame or group)"),
+    x: z.number().optional().describe("Optional X position relative to the new parent"),
+    y: z.number().optional().describe("Optional Y position relative to the new parent"),
+    index: z
+      .number()
+      .optional()
+      .describe("Optional child index to insert at (default: appended as last child)"),
+  },
+  async ({ nodeId, parentId, x, y, index }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_parent", {
+        nodeId,
+        parentId,
+        x,
+        y,
+        index,
+      });
+      const typedResult = result as {
+        name: string;
+        parentName: string;
+        x?: number;
+        y?: number;
+      };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Moved node "${typedResult.name}" into "${typedResult.parentName}" at (${typedResult.x}, ${typedResult.y})`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting parent: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
 
 // Update the join_channel tool
 server.tool(
