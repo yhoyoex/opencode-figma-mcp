@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
+import { readFile } from "fs/promises";
 var logger = {
   info: (message) => process.stderr.write(`[INFO] ${message}
 `),
@@ -2335,6 +2336,409 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
     ws.send(JSON.stringify(request));
   });
 }
+server.tool(
+  "set_image_fill",
+  "Fill a node in Figma with an image from a local file path, a URL, or base64 data (replaces the node's existing fills)",
+  {
+    nodeId: z.string().describe("The ID of the node to fill"),
+    imagePath: z.string().optional().describe(
+      "Absolute path to a local image file, read by the MCP server (preferred: keeps image bytes out of the model context)"
+    ),
+    imageUrl: z.string().optional().describe(
+      "Image URL, fetched by the MCP server (the Figma plugin cannot fetch arbitrary domains itself)"
+    ),
+    imageBase64: z.string().optional().describe(
+      "Base64-encoded image data, with or without a data: URI prefix (only when the image exists nowhere else)"
+    ),
+    scaleMode: z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("How the image fills the node (default: FILL)")
+  },
+  async ({ nodeId, imagePath, imageUrl, imageBase64, scaleMode }) => {
+    try {
+      const sources = [imagePath, imageUrl, imageBase64].filter(
+        (source) => source !== void 0 && source !== ""
+      );
+      if (sources.length !== 1) {
+        throw new Error("Provide exactly one of imagePath, imageUrl or imageBase64");
+      }
+      let base64Data;
+      if (imagePath) {
+        base64Data = (await readFile(imagePath)).toString("base64");
+      } else if (imageUrl) {
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image URL (HTTP ${response.status})`);
+        }
+        base64Data = Buffer.from(await response.arrayBuffer()).toString("base64");
+      } else {
+        base64Data = imageBase64.replace(/^data:[^;,]+;base64,/, "");
+      }
+      if (base64Data.length > 12 * 1024 * 1024) {
+        throw new Error(
+          "Image is too large to send over the relay (~9MB binary max); downscale it first"
+        );
+      }
+      const result = await sendCommandToFigma("set_image_fill", {
+        nodeId,
+        imageBase64: base64Data,
+        scaleMode: scaleMode || "FILL"
+      });
+      const typedResult = result;
+      const sizeInfo = typedResult.imageWidth ? ` (${typedResult.imageWidth}x${typedResult.imageHeight})` : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Set image fill of node "${typedResult.name}"${sizeInfo} with scale mode ${scaleMode || "FILL"}, imageHash: ${typedResult.imageHash}`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting image fill: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "rename_node",
+  "Rename a node in Figma",
+  {
+    nodeId: z.string().describe("The ID of the node to rename"),
+    name: z.string().describe("The new name for the node")
+  },
+  async ({ nodeId, name }) => {
+    try {
+      const result = await sendCommandToFigma("rename_node", { nodeId, name });
+      const typedResult = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Renamed node from "${typedResult.previousName}" to "${typedResult.name}"`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "create_section",
+  "Create a section in Figma to group related content on the canvas",
+  {
+    x: z.number().describe("X position"),
+    y: z.number().describe("Y position"),
+    width: z.number().describe("Width of the section"),
+    height: z.number().describe("Height of the section"),
+    name: z.string().optional().describe("Optional name for the section")
+  },
+  async ({ x, y, width, height, name }) => {
+    try {
+      const result = await sendCommandToFigma("create_section", {
+        x,
+        y,
+        width,
+        height,
+        name: name || "Section"
+      });
+      const typedResult = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created section "${typedResult.name}" with ID: ${typedResult.id}`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating section: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "set_parent",
+  "Move a node into a new parent node (e.g. a section, frame or group). Preserves the node's absolute position unless x/y are provided",
+  {
+    nodeId: z.string().describe("The ID of the node to move"),
+    parentId: z.string().describe("The ID of the new parent node (must support children, e.g. a section, frame or group)"),
+    x: z.number().optional().describe("Optional X position relative to the new parent"),
+    y: z.number().optional().describe("Optional Y position relative to the new parent"),
+    index: z.number().optional().describe("Optional child index to insert at (default: appended as last child)")
+  },
+  async ({ nodeId, parentId, x, y, index }) => {
+    try {
+      const result = await sendCommandToFigma("set_parent", {
+        nodeId,
+        parentId,
+        x,
+        y,
+        index
+      });
+      const typedResult = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Moved node "${typedResult.name}" into "${typedResult.parentName}" at (${typedResult.x}, ${typedResult.y})`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting parent: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+function jsonResult(result) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(result)
+      }
+    ]
+  };
+}
+function errorResult(prefix, error) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: `${prefix}: ${error instanceof Error ? error.message : String(error)}`
+      }
+    ]
+  };
+}
+var rgbaSchema = z.object({
+  r: z.number().min(0).max(1).describe("Red component (0-1)"),
+  g: z.number().min(0).max(1).describe("Green component (0-1)"),
+  b: z.number().min(0).max(1).describe("Blue component (0-1)"),
+  a: z.number().min(0).max(1).optional().describe("Alpha component (0-1, default 1)")
+});
+var variableValueSchema = z.union([
+  rgbaSchema,
+  z.object({
+    aliasOf: z.string().describe("ID of another variable to alias")
+  }),
+  z.number(),
+  z.string(),
+  z.boolean()
+]);
+server.tool(
+  "create_component_from_node",
+  "Convert an existing node (e.g. a frame) into a Figma main Component. The node is replaced in place by the new component.",
+  {
+    nodeId: z.string().describe("The ID of the node to convert into a component"),
+    name: z.string().optional().describe("Optional name for the new component")
+  },
+  async ({ nodeId, name }) => {
+    try {
+      const result = await sendCommandToFigma("create_component_from_node", { nodeId, name });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating component from node", error);
+    }
+  }
+);
+server.tool(
+  "combine_as_variants",
+  'Combine multiple main Components into a Component Set (variants). Each component name must use the variant format "Prop=Value, Prop2=Value" (e.g. "Type=Primary, Size=Large") so Figma can derive the variant properties. Variants are then laid out in a grid (max 4 columns, 24px gap, 24px padding) and the component set is resized to fit them (skipped if the set uses auto layout).',
+  {
+    componentIds: z.array(z.string()).min(1).describe("IDs of the COMPONENT nodes to combine"),
+    name: z.string().optional().describe("Optional name for the component set"),
+    parentId: z.string().optional().describe("Optional parent node ID for the component set (default: parent of the first component, or current page)")
+  },
+  async ({ componentIds, name, parentId }) => {
+    try {
+      const result = await sendCommandToFigma("combine_as_variants", {
+        componentIds,
+        name,
+        parentId
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error combining components as variants", error);
+    }
+  }
+);
+server.tool(
+  "add_component_property",
+  "Add a component property (TEXT, BOOLEAN or INSTANCE_SWAP) to a COMPONENT or COMPONENT_SET. Optionally link it to a child node: TEXT controls the node's characters, BOOLEAN its visibility, INSTANCE_SWAP the main component of a nested instance.",
+  {
+    componentId: z.string().describe("ID of the COMPONENT or COMPONENT_SET"),
+    name: z.string().describe("Property name"),
+    type: z.enum(["TEXT", "BOOLEAN", "INSTANCE_SWAP"]).describe("Property type"),
+    defaultValue: z.union([z.string(), z.boolean()]).describe("Default value: string for TEXT, boolean for BOOLEAN, component ID for INSTANCE_SWAP"),
+    targetNodeId: z.string().optional().describe("Optional child node ID to bind (TEXT node for TEXT, any node for BOOLEAN, INSTANCE node for INSTANCE_SWAP)")
+  },
+  async ({ componentId, name, type, defaultValue, targetNodeId }) => {
+    try {
+      const result = await sendCommandToFigma("add_component_property", {
+        componentId,
+        name,
+        type,
+        defaultValue,
+        targetNodeId
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error adding component property", error);
+    }
+  }
+);
+server.tool(
+  "swap_instance",
+  "Swap the main component of an instance, preserving overrides where possible",
+  {
+    instanceId: z.string().describe("ID of the INSTANCE node"),
+    componentId: z.string().describe("ID of the new main COMPONENT")
+  },
+  async ({ instanceId, componentId }) => {
+    try {
+      const result = await sendCommandToFigma("swap_instance", { instanceId, componentId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error swapping instance", error);
+    }
+  }
+);
+server.tool(
+  "get_local_variables",
+  "Get all local variable collections (with modes) and variables in the current document. Color values are returned as hex, aliases as { aliasOf }.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_local_variables");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting local variables", error);
+    }
+  }
+);
+server.tool(
+  "create_variable_collection",
+  "Create a local variable collection. The default mode is renamed to modes[0]; remaining modes are added (multiple modes may require a paid Figma plan).",
+  {
+    name: z.string().describe("Collection name"),
+    modes: z.array(z.string()).optional().describe('Optional mode names, e.g. ["Light", "Dark"]')
+  },
+  async ({ name, modes }) => {
+    try {
+      const result = await sendCommandToFigma("create_variable_collection", { name, modes });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating variable collection", error);
+    }
+  }
+);
+server.tool(
+  "create_variable",
+  'Create a variable in a collection and optionally set its value. Use slashes in the name for grouping (e.g. "color/primary"). Colors use RGBA 0-1.',
+  {
+    collectionId: z.string().describe("ID of the variable collection"),
+    name: z.string().describe("Variable name"),
+    resolvedType: z.enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"]).describe("Variable type"),
+    value: variableValueSchema.optional().describe("Optional initial value: {r,g,b,a?} for COLOR, number for FLOAT, string for STRING, boolean for BOOLEAN, or {aliasOf: variableId}"),
+    modeId: z.string().optional().describe("Optional mode ID for the value (default: collection's default mode)"),
+    scopes: z.array(z.string()).optional().describe('Optional variable scopes, e.g. ["ALL_FILLS"], ["GAP"], ["CORNER_RADIUS"]')
+  },
+  async ({ collectionId, name, resolvedType, value, modeId, scopes }) => {
+    try {
+      const result = await sendCommandToFigma("create_variable", {
+        collectionId,
+        name,
+        resolvedType,
+        value,
+        modeId,
+        scopes
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating variable", error);
+    }
+  }
+);
+server.tool(
+  "set_variable_value",
+  "Set the value of a variable for a mode. Value may be a literal or an alias to another variable ({aliasOf: variableId}).",
+  {
+    variableId: z.string().describe("ID of the variable"),
+    value: variableValueSchema.describe("Value: {r,g,b,a?} (0-1), number, string, boolean, or {aliasOf: variableId}"),
+    modeId: z.string().optional().describe("Optional mode ID (default: collection's default mode)")
+  },
+  async ({ variableId, value, modeId }) => {
+    try {
+      const result = await sendCommandToFigma("set_variable_value", { variableId, value, modeId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting variable value", error);
+    }
+  }
+);
+server.tool(
+  "bind_variable",
+  'Bind a variable to a node property. Fields: fills/strokes (COLOR, bound to the first paint), width, height, itemSpacing, counterAxisSpacing, paddingLeft/Right/Top/Bottom, topLeftRadius/topRightRadius/bottomLeftRadius/bottomRightRadius, strokeWeight, opacity, characters, visible. Shortcuts: "padding" (4 sides), "cornerRadius" (4 corners). Pass variableId null to unbind.',
+  {
+    nodeId: z.string().describe("ID of the node"),
+    field: z.enum([
+      "fills",
+      "strokes",
+      "width",
+      "height",
+      "itemSpacing",
+      "counterAxisSpacing",
+      "paddingLeft",
+      "paddingRight",
+      "paddingTop",
+      "paddingBottom",
+      "padding",
+      "topLeftRadius",
+      "topRightRadius",
+      "bottomLeftRadius",
+      "bottomRightRadius",
+      "cornerRadius",
+      "strokeWeight",
+      "opacity",
+      "characters",
+      "visible"
+    ]).describe("Node property to bind"),
+    variableId: z.string().nullable().describe("ID of the variable to bind, or null to remove the binding")
+  },
+  async ({ nodeId, field, variableId }) => {
+    try {
+      const result = await sendCommandToFigma("bind_variable", { nodeId, field, variableId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error binding variable", error);
+    }
+  }
+);
 server.tool(
   "join_channel",
   "Join a specific channel to communicate with Figma",

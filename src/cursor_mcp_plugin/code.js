@@ -262,6 +262,24 @@ async function handleCommand(command, params) {
       return await createSection(params);
     case "set_parent":
       return await setParent(params);
+    case "create_component_from_node":
+      return await createComponentFromNode(params);
+    case "combine_as_variants":
+      return await combineAsVariants(params);
+    case "add_component_property":
+      return await addComponentProperty(params);
+    case "swap_instance":
+      return await swapInstance(params);
+    case "get_local_variables":
+      return await getLocalVariables();
+    case "create_variable_collection":
+      return await createVariableCollection(params);
+    case "create_variable":
+      return await createVariable(params);
+    case "set_variable_value":
+      return await setVariableValue(params);
+    case "bind_variable":
+      return await bindVariable(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -4341,5 +4359,645 @@ async function setSelections(params) {
     selectedNodes: selectedNodes,
     notFoundIds: notFoundIds,
     message: `Selected ${nodes.length} nodes${notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : ''}`
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Components (create, variants, properties, swap)
+// ---------------------------------------------------------------------------
+
+async function createComponentFromNode(params) {
+  const { nodeId, name } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found with ID: ${nodeId}`);
+  }
+  if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
+    throw new Error(`Node ${nodeId} is already a ${node.type}`);
+  }
+  if (node.type === "DOCUMENT" || node.type === "PAGE") {
+    throw new Error(`Cannot convert a ${node.type} node into a component`);
+  }
+
+  let component;
+  try {
+    component = figma.createComponentFromNode(node);
+  } catch (error) {
+    throw new Error(`Cannot create component from node ${nodeId}: ${error.message}`);
+  }
+
+  if (name !== undefined && name !== null) {
+    component.name = String(name);
+  }
+
+  return {
+    id: component.id,
+    name: component.name,
+    key: component.key,
+  };
+}
+
+async function combineAsVariants(params) {
+  const { componentIds, name, parentId } = params || {};
+
+  if (!Array.isArray(componentIds) || componentIds.length === 0) {
+    throw new Error("Missing or empty componentIds parameter");
+  }
+
+  const components = [];
+  for (const id of componentIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) {
+      throw new Error(`Component node not found with ID: ${id}`);
+    }
+    if (node.type !== "COMPONENT") {
+      throw new Error(`Node ${id} is not a COMPONENT (got type: ${node.type})`);
+    }
+    components.push(node);
+  }
+
+  let parent;
+  if (parentId) {
+    parent = await figma.getNodeByIdAsync(parentId);
+    if (!parent) {
+      throw new Error(`Parent node not found with ID: ${parentId}`);
+    }
+    if (!("appendChild" in parent)) {
+      throw new Error(`Parent node ${parentId} (${parent.type}) does not support children`);
+    }
+  } else {
+    parent = components[0].parent || figma.currentPage;
+  }
+
+  let componentSet;
+  try {
+    componentSet = figma.combineAsVariants(components, parent);
+  } catch (error) {
+    throw new Error(`Cannot combine components as variants: ${error.message}`);
+  }
+
+  if (name !== undefined && name !== null) {
+    componentSet.name = String(name);
+  }
+
+  // combineAsVariants keeps the original child positions, which can stack
+  // variants on top of each other; lay them out in a grid instead
+  if (componentSet.layoutMode === "NONE") {
+    const VARIANT_GAP = 24;
+    const VARIANT_PADDING = 24;
+    const MAX_COLUMNS = 4;
+    const variants = componentSet.children;
+    const columns = Math.min(variants.length, MAX_COLUMNS);
+    const cellWidth = Math.max.apply(null, variants.map((child) => child.width));
+    const cellHeight = Math.max.apply(null, variants.map((child) => child.height));
+
+    variants.forEach((child, index) => {
+      child.x = VARIANT_PADDING + (index % columns) * (cellWidth + VARIANT_GAP);
+      child.y = VARIANT_PADDING + Math.floor(index / columns) * (cellHeight + VARIANT_GAP);
+    });
+
+    const rows = Math.ceil(variants.length / columns);
+    componentSet.resizeWithoutConstraints(
+      VARIANT_PADDING * 2 + columns * cellWidth + (columns - 1) * VARIANT_GAP,
+      VARIANT_PADDING * 2 + rows * cellHeight + (rows - 1) * VARIANT_GAP
+    );
+  }
+
+  let variantGroupProperties = null;
+  try {
+    variantGroupProperties = componentSet.variantGroupProperties;
+  } catch (error) {
+    // Invalid variant names (not "Prop=Value") make this getter throw
+    variantGroupProperties = { error: error.message };
+  }
+
+  return {
+    id: componentSet.id,
+    name: componentSet.name,
+    key: componentSet.key,
+    variantGroupProperties: variantGroupProperties,
+    variants: componentSet.children.map((child) => ({
+      id: child.id,
+      name: child.name,
+    })),
+  };
+}
+
+function isDescendantOf(node, ancestor) {
+  let current = node.parent;
+  while (current) {
+    if (current.id === ancestor.id) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+async function loadTextNodeFonts(textNode) {
+  if (textNode.fontName === figma.mixed) {
+    const fonts = textNode.getRangeAllFontNames(0, textNode.characters.length);
+    for (const font of fonts) {
+      await figma.loadFontAsync(font);
+    }
+  } else {
+    await figma.loadFontAsync(textNode.fontName);
+  }
+}
+
+async function addComponentProperty(params) {
+  const { componentId, name, type, defaultValue, targetNodeId } = params || {};
+
+  if (!componentId) {
+    throw new Error("Missing componentId parameter");
+  }
+  if (!name) {
+    throw new Error("Missing name parameter");
+  }
+  if (["TEXT", "BOOLEAN", "INSTANCE_SWAP"].indexOf(type) === -1) {
+    throw new Error(`Invalid type: ${type}. Must be TEXT, BOOLEAN or INSTANCE_SWAP`);
+  }
+
+  const component = await figma.getNodeByIdAsync(componentId);
+  if (!component) {
+    throw new Error(`Component node not found with ID: ${componentId}`);
+  }
+  if (component.type !== "COMPONENT" && component.type !== "COMPONENT_SET") {
+    throw new Error(`Node ${componentId} is not a COMPONENT or COMPONENT_SET (got type: ${component.type})`);
+  }
+
+  if (type === "TEXT" && typeof defaultValue !== "string") {
+    throw new Error("defaultValue must be a string for TEXT properties");
+  }
+  if (type === "BOOLEAN" && typeof defaultValue !== "boolean") {
+    throw new Error("defaultValue must be a boolean for BOOLEAN properties");
+  }
+  if (type === "INSTANCE_SWAP") {
+    if (typeof defaultValue !== "string") {
+      throw new Error("defaultValue must be a component ID for INSTANCE_SWAP properties");
+    }
+    const swapComponent = await figma.getNodeByIdAsync(defaultValue);
+    if (!swapComponent || swapComponent.type !== "COMPONENT") {
+      throw new Error(`defaultValue ${defaultValue} is not a valid COMPONENT ID`);
+    }
+  }
+
+  // Validate the target before mutating the component
+  let target = null;
+  let referenceField = null;
+  if (targetNodeId) {
+    target = await figma.getNodeByIdAsync(targetNodeId);
+    if (!target) {
+      throw new Error(`Target node not found with ID: ${targetNodeId}`);
+    }
+    if (!isDescendantOf(target, component)) {
+      throw new Error(`Target node ${targetNodeId} is not inside component ${componentId}`);
+    }
+    if (type === "TEXT") {
+      if (target.type !== "TEXT") {
+        throw new Error(`Target node ${targetNodeId} must be a TEXT node for TEXT properties (got ${target.type})`);
+      }
+      referenceField = "characters";
+    } else if (type === "BOOLEAN") {
+      referenceField = "visible";
+    } else {
+      if (target.type !== "INSTANCE") {
+        throw new Error(`Target node ${targetNodeId} must be an INSTANCE for INSTANCE_SWAP properties (got ${target.type})`);
+      }
+      referenceField = "mainComponent";
+    }
+  }
+
+  let propertyKey;
+  try {
+    propertyKey = component.addComponentProperty(name, type, defaultValue);
+  } catch (error) {
+    throw new Error(`Cannot add component property "${name}": ${error.message}`);
+  }
+
+  if (target) {
+    try {
+      if (target.type === "TEXT") {
+        await loadTextNodeFonts(target);
+      }
+      const references = Object.assign({}, target.componentPropertyReferences || {});
+      references[referenceField] = propertyKey;
+      target.componentPropertyReferences = references;
+    } catch (error) {
+      throw new Error(`Property "${propertyKey}" was added but linking to node ${targetNodeId} failed: ${error.message}`);
+    }
+  }
+
+  return {
+    componentId: component.id,
+    propertyKey: propertyKey,
+    type: type,
+    targetNodeId: target ? target.id : undefined,
+    referenceField: referenceField || undefined,
+  };
+}
+
+async function swapInstance(params) {
+  const { instanceId, componentId } = params || {};
+
+  if (!instanceId) {
+    throw new Error("Missing instanceId parameter");
+  }
+  if (!componentId) {
+    throw new Error("Missing componentId parameter");
+  }
+
+  const instance = await figma.getNodeByIdAsync(instanceId);
+  if (!instance) {
+    throw new Error(`Instance node not found with ID: ${instanceId}`);
+  }
+  if (instance.type !== "INSTANCE") {
+    throw new Error(`Node ${instanceId} is not an INSTANCE (got type: ${instance.type})`);
+  }
+
+  const component = await figma.getNodeByIdAsync(componentId);
+  if (!component) {
+    throw new Error(`Component node not found with ID: ${componentId}`);
+  }
+  if (component.type !== "COMPONENT") {
+    throw new Error(`Node ${componentId} is not a COMPONENT (got type: ${component.type})`);
+  }
+
+  try {
+    instance.swapComponent(component);
+  } catch (error) {
+    throw new Error(`Cannot swap instance: ${error.message}`);
+  }
+
+  const mainComponent = await instance.getMainComponentAsync();
+
+  return {
+    id: instance.id,
+    name: instance.name,
+    mainComponentId: mainComponent ? mainComponent.id : undefined,
+    mainComponentName: mainComponent ? mainComponent.name : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Variables (collections, values, bindings)
+// ---------------------------------------------------------------------------
+
+function formatVariableValue(value) {
+  if (value && typeof value === "object") {
+    if (value.type === "VARIABLE_ALIAS") {
+      return { aliasOf: value.id };
+    }
+    if ("r" in value && "g" in value && "b" in value) {
+      return rgbaToHex(value);
+    }
+  }
+  return value;
+}
+
+async function getLocalVariables() {
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  const variables = await figma.variables.getLocalVariablesAsync();
+
+  return {
+    collections: collections.map((collection) => ({
+      id: collection.id,
+      name: collection.name,
+      defaultModeId: collection.defaultModeId,
+      modes: collection.modes.map((mode) => ({
+        modeId: mode.modeId,
+        name: mode.name,
+      })),
+    })),
+    variables: variables.map((variable) => {
+      const valuesByMode = {};
+      for (const modeId of Object.keys(variable.valuesByMode)) {
+        valuesByMode[modeId] = formatVariableValue(variable.valuesByMode[modeId]);
+      }
+      return {
+        id: variable.id,
+        name: variable.name,
+        resolvedType: variable.resolvedType,
+        collectionId: variable.variableCollectionId,
+        scopes: variable.scopes,
+        valuesByMode: valuesByMode,
+      };
+    }),
+  };
+}
+
+async function createVariableCollection(params) {
+  const { name, modes } = params || {};
+
+  if (!name) {
+    throw new Error("Missing name parameter");
+  }
+
+  const collection = figma.variables.createVariableCollection(String(name));
+  const warnings = [];
+
+  if (Array.isArray(modes) && modes.length > 0) {
+    collection.renameMode(collection.modes[0].modeId, String(modes[0]));
+    for (let i = 1; i < modes.length; i++) {
+      try {
+        collection.addMode(String(modes[i]));
+      } catch (error) {
+        warnings.push(
+          `Could not add mode "${modes[i]}": ${error.message} (the current Figma plan may limit the number of modes per collection)`
+        );
+      }
+    }
+  }
+
+  return {
+    id: collection.id,
+    name: collection.name,
+    defaultModeId: collection.defaultModeId,
+    modes: collection.modes.map((mode) => ({
+      modeId: mode.modeId,
+      name: mode.name,
+    })),
+    warnings: warnings.length > 0 ? warnings : undefined,
+  };
+}
+
+// Convert a tool value into a Figma VariableValue for the given variable
+async function toVariableValue(variable, value) {
+  if (value && typeof value === "object" && "aliasOf" in value) {
+    const target = await figma.variables.getVariableByIdAsync(value.aliasOf);
+    if (!target) {
+      throw new Error(`Alias target variable not found with ID: ${value.aliasOf}`);
+    }
+    return figma.variables.createVariableAlias(target);
+  }
+
+  switch (variable.resolvedType) {
+    case "COLOR":
+      if (
+        !value ||
+        typeof value !== "object" ||
+        typeof value.r !== "number" ||
+        typeof value.g !== "number" ||
+        typeof value.b !== "number"
+      ) {
+        throw new Error("COLOR value must be an object {r, g, b, a?} with components 0-1");
+      }
+      return {
+        r: value.r,
+        g: value.g,
+        b: value.b,
+        a: typeof value.a === "number" ? value.a : 1,
+      };
+    case "FLOAT":
+      if (typeof value !== "number") {
+        throw new Error("FLOAT value must be a number");
+      }
+      return value;
+    case "STRING":
+      if (typeof value !== "string") {
+        throw new Error("STRING value must be a string");
+      }
+      return value;
+    case "BOOLEAN":
+      if (typeof value !== "boolean") {
+        throw new Error("BOOLEAN value must be a boolean");
+      }
+      return value;
+    default:
+      throw new Error(`Unsupported variable type: ${variable.resolvedType}`);
+  }
+}
+
+async function resolveModeId(variable, modeId) {
+  const collection = await figma.variables.getVariableCollectionByIdAsync(
+    variable.variableCollectionId
+  );
+  if (!collection) {
+    throw new Error(`Variable collection not found with ID: ${variable.variableCollectionId}`);
+  }
+  if (!modeId) {
+    return collection.defaultModeId;
+  }
+  const exists = collection.modes.some((mode) => mode.modeId === modeId);
+  if (!exists) {
+    throw new Error(
+      `Mode ${modeId} not found in collection "${collection.name}". Available: ${collection.modes
+        .map((mode) => `${mode.name} (${mode.modeId})`)
+        .join(", ")}`
+    );
+  }
+  return modeId;
+}
+
+async function createVariable(params) {
+  const { collectionId, name, resolvedType, value, modeId, scopes } = params || {};
+
+  if (!collectionId) {
+    throw new Error("Missing collectionId parameter");
+  }
+  if (!name) {
+    throw new Error("Missing name parameter");
+  }
+  if (["COLOR", "FLOAT", "STRING", "BOOLEAN"].indexOf(resolvedType) === -1) {
+    throw new Error(`Invalid resolvedType: ${resolvedType}. Must be COLOR, FLOAT, STRING or BOOLEAN`);
+  }
+
+  const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+  if (!collection) {
+    throw new Error(`Variable collection not found with ID: ${collectionId}`);
+  }
+
+  let variable;
+  try {
+    variable = figma.variables.createVariable(String(name), collection, resolvedType);
+  } catch (error) {
+    throw new Error(`Cannot create variable "${name}": ${error.message}`);
+  }
+
+  try {
+    if (Array.isArray(scopes)) {
+      variable.scopes = scopes;
+    }
+
+    let targetModeId;
+    if (value !== undefined && value !== null) {
+      targetModeId = await resolveModeId(variable, modeId);
+      variable.setValueForMode(targetModeId, await toVariableValue(variable, value));
+    }
+
+    return {
+      id: variable.id,
+      name: variable.name,
+      key: variable.key,
+      resolvedType: variable.resolvedType,
+      collectionId: variable.variableCollectionId,
+      scopes: variable.scopes,
+      modeId: targetModeId,
+      value: targetModeId ? formatVariableValue(variable.valuesByMode[targetModeId]) : undefined,
+    };
+  } catch (error) {
+    // Do not leave a half-configured variable behind
+    let rollbackNote = "";
+    try {
+      variable.remove();
+    } catch (removeError) {
+      rollbackNote = ` (rollback failed, variable ${variable.id} may remain: ${removeError.message})`;
+    }
+    throw new Error(`Variable "${name}" was not created: ${error.message}${rollbackNote}`);
+  }
+}
+
+async function setVariableValue(params) {
+  const { variableId, value, modeId } = params || {};
+
+  if (!variableId) {
+    throw new Error("Missing variableId parameter");
+  }
+  if (value === undefined || value === null) {
+    throw new Error("Missing value parameter");
+  }
+
+  const variable = await figma.variables.getVariableByIdAsync(variableId);
+  if (!variable) {
+    throw new Error(`Variable not found with ID: ${variableId}`);
+  }
+
+  const targetModeId = await resolveModeId(variable, modeId);
+  variable.setValueForMode(targetModeId, await toVariableValue(variable, value));
+
+  return {
+    id: variable.id,
+    name: variable.name,
+    modeId: targetModeId,
+    value: formatVariableValue(variable.valuesByMode[targetModeId]),
+  };
+}
+
+const BINDABLE_NODE_FIELDS = [
+  "width",
+  "height",
+  "itemSpacing",
+  "counterAxisSpacing",
+  "paddingLeft",
+  "paddingRight",
+  "paddingTop",
+  "paddingBottom",
+  "topLeftRadius",
+  "topRightRadius",
+  "bottomLeftRadius",
+  "bottomRightRadius",
+  "strokeWeight",
+  "opacity",
+  "characters",
+  "visible",
+];
+
+const BINDABLE_FIELD_SHORTCUTS = {
+  padding: ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"],
+  cornerRadius: ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"],
+};
+
+async function bindVariable(params) {
+  const { nodeId, field, variableId } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+  if (!field) {
+    throw new Error("Missing field parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found with ID: ${nodeId}`);
+  }
+
+  let variable = null;
+  if (variableId) {
+    variable = await figma.variables.getVariableByIdAsync(variableId);
+    if (!variable) {
+      throw new Error(`Variable not found with ID: ${variableId}`);
+    }
+  }
+
+  if (field === "fills" || field === "strokes") {
+    if (!(field in node)) {
+      throw new Error(`Node ${nodeId} (${node.type}) does not support ${field}`);
+    }
+    if (variable && variable.resolvedType !== "COLOR") {
+      throw new Error(`Variable ${variable.name} is ${variable.resolvedType}; ${field} requires a COLOR variable`);
+    }
+    if (node[field] === figma.mixed) {
+      throw new Error(`Node ${nodeId} has mixed ${field}; cannot bind a variable`);
+    }
+
+    const paints = node[field].slice();
+    if (paints.length === 0) {
+      if (!variable) {
+        return { id: node.id, name: node.name, field: field, boundFields: [], variableId: null };
+      }
+      paints.push({ type: "SOLID", color: { r: 0, g: 0, b: 0 } });
+    }
+    if (paints[0].type !== "SOLID") {
+      throw new Error(`First ${field} paint of node ${nodeId} is ${paints[0].type}; only SOLID paints can be bound`);
+    }
+
+    paints[0] = figma.variables.setBoundVariableForPaint(paints[0], "color", variable);
+    node[field] = paints;
+
+    return {
+      id: node.id,
+      name: node.name,
+      field: field,
+      boundFields: [field],
+      variableId: variable ? variable.id : null,
+    };
+  }
+
+  const fields = BINDABLE_FIELD_SHORTCUTS[field] || [field];
+  for (const f of fields) {
+    if (BINDABLE_NODE_FIELDS.indexOf(f) === -1) {
+      throw new Error(`Unsupported field: ${f}`);
+    }
+    if (!(f in node) || typeof node.setBoundVariable !== "function") {
+      throw new Error(`Node ${nodeId} (${node.type}) does not support binding ${f}`);
+    }
+  }
+
+  if (node.type === "TEXT" && fields.indexOf("characters") !== -1) {
+    await loadTextNodeFonts(node);
+  }
+
+  const boundFields = [];
+  const failedFields = [];
+  for (const f of fields) {
+    try {
+      node.setBoundVariable(f, variable);
+      boundFields.push(f);
+    } catch (error) {
+      failedFields.push({ field: f, error: error.message });
+    }
+  }
+
+  if (failedFields.length > 0) {
+    const failedSummary = failedFields.map((item) => `${item.field} (${item.error})`).join(", ");
+    throw new Error(
+      `Cannot bind ${field} on node ${nodeId}. Failed: ${failedSummary}. Succeeded: ${
+        boundFields.length > 0 ? boundFields.join(", ") : "none"
+      }`
+    );
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    field: field,
+    boundFields: boundFields,
+    variableId: variable ? variable.id : null,
   };
 }

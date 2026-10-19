@@ -194,6 +194,18 @@ The MCP server provides the following tools for interacting with Figma:
 - `create_component_instance` - Create an instance of a component
 - `get_instance_overrides` - Extract override properties from a selected component instance
 - `set_instance_overrides` - Apply extracted overrides to target instances
+- `create_component_from_node` - Convert an existing node (e.g. a frame) into a main Component
+- `combine_as_variants` - Combine components named `Prop=Value, Prop2=Value` into a Component Set (variants)
+- `add_component_property` - Add a TEXT, BOOLEAN or INSTANCE_SWAP property to a component/component set, optionally linked to a child node
+- `swap_instance` - Swap the main component of an instance
+
+### Variables
+
+- `get_local_variables` - List local variable collections (with modes) and variables; colors returned as hex
+- `create_variable_collection` - Create a variable collection with named modes (extra modes may require a paid plan)
+- `create_variable` - Create a COLOR, FLOAT, STRING or BOOLEAN variable, with optional value and scopes
+- `set_variable_value` - Set a variable value for a mode (literal or alias via `{ aliasOf: variableId }`)
+- `bind_variable` - Bind (or unbind with `variableId: null`) a variable to fills/strokes, size, spacing, padding, corner radius, stroke weight, opacity, characters or visibility
 
 ### Export & Advanced
 
