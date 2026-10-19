@@ -2657,7 +2657,16 @@ type FigmaCommand =
   | "set_image_fill"
   | "rename_node"
   | "create_section"
-  | "set_parent";
+  | "set_parent"
+  | "create_component_from_node"
+  | "combine_as_variants"
+  | "add_component_property"
+  | "swap_instance"
+  | "get_local_variables"
+  | "create_variable_collection"
+  | "create_variable"
+  | "set_variable_value"
+  | "bind_variable";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -2829,6 +2838,28 @@ type CommandParams = {
     y?: number;
     index?: number;
   };
+  create_component_from_node: { nodeId: string; name?: string };
+  combine_as_variants: { componentIds: string[]; name?: string; parentId?: string };
+  add_component_property: {
+    componentId: string;
+    name: string;
+    type: "TEXT" | "BOOLEAN" | "INSTANCE_SWAP";
+    defaultValue: string | boolean;
+    targetNodeId?: string;
+  };
+  swap_instance: { instanceId: string; componentId: string };
+  get_local_variables: Record<string, never>;
+  create_variable_collection: { name: string; modes?: string[] };
+  create_variable: {
+    collectionId: string;
+    name: string;
+    resolvedType: "COLOR" | "FLOAT" | "STRING" | "BOOLEAN";
+    value?: unknown;
+    modeId?: string;
+    scopes?: string[];
+  };
+  set_variable_value: { variableId: string; value: unknown; modeId?: string };
+  bind_variable: { nodeId: string; field: string; variableId: string | null };
 
 };
 
@@ -3282,6 +3313,283 @@ server.tool(
           },
         ],
       };
+    }
+  }
+);
+
+// Shared result helpers for component & variable tools
+function jsonResult(result: unknown) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(result),
+      },
+    ],
+  };
+}
+
+function errorResult(prefix: string, error: unknown) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `${prefix}: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    ],
+  };
+}
+
+const rgbaSchema = z.object({
+  r: z.number().min(0).max(1).describe("Red component (0-1)"),
+  g: z.number().min(0).max(1).describe("Green component (0-1)"),
+  b: z.number().min(0).max(1).describe("Blue component (0-1)"),
+  a: z.number().min(0).max(1).optional().describe("Alpha component (0-1, default 1)"),
+});
+
+const variableValueSchema = z.union([
+  rgbaSchema,
+  z.object({
+    aliasOf: z.string().describe("ID of another variable to alias"),
+  }),
+  z.number(),
+  z.string(),
+  z.boolean(),
+]);
+
+// Create Component From Node Tool
+server.tool(
+  "create_component_from_node",
+  "Convert an existing node (e.g. a frame) into a Figma main Component. The node is replaced in place by the new component.",
+  {
+    nodeId: z.string().describe("The ID of the node to convert into a component"),
+    name: z.string().optional().describe("Optional name for the new component"),
+  },
+  async ({ nodeId, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component_from_node", { nodeId, name });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating component from node", error);
+    }
+  }
+);
+
+// Combine As Variants Tool
+server.tool(
+  "combine_as_variants",
+  "Combine multiple main Components into a Component Set (variants). Each component name must use the variant format \"Prop=Value, Prop2=Value\" (e.g. \"Type=Primary, Size=Large\") so Figma can derive the variant properties. Variants are then laid out in a grid (max 4 columns, 24px gap, 24px padding) and the component set is resized to fit them (skipped if the set uses auto layout).",
+  {
+    componentIds: z
+      .array(z.string())
+      .min(1)
+      .describe("IDs of the COMPONENT nodes to combine"),
+    name: z.string().optional().describe("Optional name for the component set"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID for the component set (default: parent of the first component, or current page)"),
+  },
+  async ({ componentIds, name, parentId }: any) => {
+    try {
+      const result = await sendCommandToFigma("combine_as_variants", {
+        componentIds,
+        name,
+        parentId,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error combining components as variants", error);
+    }
+  }
+);
+
+// Add Component Property Tool
+server.tool(
+  "add_component_property",
+  "Add a component property (TEXT, BOOLEAN or INSTANCE_SWAP) to a COMPONENT or COMPONENT_SET. Optionally link it to a child node: TEXT controls the node's characters, BOOLEAN its visibility, INSTANCE_SWAP the main component of a nested instance.",
+  {
+    componentId: z.string().describe("ID of the COMPONENT or COMPONENT_SET"),
+    name: z.string().describe("Property name"),
+    type: z.enum(["TEXT", "BOOLEAN", "INSTANCE_SWAP"]).describe("Property type"),
+    defaultValue: z
+      .union([z.string(), z.boolean()])
+      .describe("Default value: string for TEXT, boolean for BOOLEAN, component ID for INSTANCE_SWAP"),
+    targetNodeId: z
+      .string()
+      .optional()
+      .describe("Optional child node ID to bind (TEXT node for TEXT, any node for BOOLEAN, INSTANCE node for INSTANCE_SWAP)"),
+  },
+  async ({ componentId, name, type, defaultValue, targetNodeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("add_component_property", {
+        componentId,
+        name,
+        type,
+        defaultValue,
+        targetNodeId,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error adding component property", error);
+    }
+  }
+);
+
+// Swap Instance Tool
+server.tool(
+  "swap_instance",
+  "Swap the main component of an instance, preserving overrides where possible",
+  {
+    instanceId: z.string().describe("ID of the INSTANCE node"),
+    componentId: z.string().describe("ID of the new main COMPONENT"),
+  },
+  async ({ instanceId, componentId }: any) => {
+    try {
+      const result = await sendCommandToFigma("swap_instance", { instanceId, componentId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error swapping instance", error);
+    }
+  }
+);
+
+// Get Local Variables Tool
+server.tool(
+  "get_local_variables",
+  "Get all local variable collections (with modes) and variables in the current document. Color values are returned as hex, aliases as { aliasOf }.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_local_variables");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting local variables", error);
+    }
+  }
+);
+
+// Create Variable Collection Tool
+server.tool(
+  "create_variable_collection",
+  "Create a local variable collection. The default mode is renamed to modes[0]; remaining modes are added (multiple modes may require a paid Figma plan).",
+  {
+    name: z.string().describe("Collection name"),
+    modes: z
+      .array(z.string())
+      .optional()
+      .describe("Optional mode names, e.g. [\"Light\", \"Dark\"]"),
+  },
+  async ({ name, modes }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_variable_collection", { name, modes });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating variable collection", error);
+    }
+  }
+);
+
+// Create Variable Tool
+server.tool(
+  "create_variable",
+  "Create a variable in a collection and optionally set its value. Use slashes in the name for grouping (e.g. \"color/primary\"). Colors use RGBA 0-1.",
+  {
+    collectionId: z.string().describe("ID of the variable collection"),
+    name: z.string().describe("Variable name"),
+    resolvedType: z.enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"]).describe("Variable type"),
+    value: variableValueSchema
+      .optional()
+      .describe("Optional initial value: {r,g,b,a?} for COLOR, number for FLOAT, string for STRING, boolean for BOOLEAN, or {aliasOf: variableId}"),
+    modeId: z
+      .string()
+      .optional()
+      .describe("Optional mode ID for the value (default: collection's default mode)"),
+    scopes: z
+      .array(z.string())
+      .optional()
+      .describe("Optional variable scopes, e.g. [\"ALL_FILLS\"], [\"GAP\"], [\"CORNER_RADIUS\"]"),
+  },
+  async ({ collectionId, name, resolvedType, value, modeId, scopes }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_variable", {
+        collectionId,
+        name,
+        resolvedType,
+        value,
+        modeId,
+        scopes,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating variable", error);
+    }
+  }
+);
+
+// Set Variable Value Tool
+server.tool(
+  "set_variable_value",
+  "Set the value of a variable for a mode. Value may be a literal or an alias to another variable ({aliasOf: variableId}).",
+  {
+    variableId: z.string().describe("ID of the variable"),
+    value: variableValueSchema.describe("Value: {r,g,b,a?} (0-1), number, string, boolean, or {aliasOf: variableId}"),
+    modeId: z
+      .string()
+      .optional()
+      .describe("Optional mode ID (default: collection's default mode)"),
+  },
+  async ({ variableId, value, modeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_variable_value", { variableId, value, modeId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting variable value", error);
+    }
+  }
+);
+
+// Bind Variable Tool
+server.tool(
+  "bind_variable",
+  "Bind a variable to a node property. Fields: fills/strokes (COLOR, bound to the first paint), width, height, itemSpacing, counterAxisSpacing, paddingLeft/Right/Top/Bottom, topLeftRadius/topRightRadius/bottomLeftRadius/bottomRightRadius, strokeWeight, opacity, characters, visible. Shortcuts: \"padding\" (4 sides), \"cornerRadius\" (4 corners). Pass variableId null to unbind.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    field: z
+      .enum([
+        "fills",
+        "strokes",
+        "width",
+        "height",
+        "itemSpacing",
+        "counterAxisSpacing",
+        "paddingLeft",
+        "paddingRight",
+        "paddingTop",
+        "paddingBottom",
+        "padding",
+        "topLeftRadius",
+        "topRightRadius",
+        "bottomLeftRadius",
+        "bottomRightRadius",
+        "cornerRadius",
+        "strokeWeight",
+        "opacity",
+        "characters",
+        "visible",
+      ])
+      .describe("Node property to bind"),
+    variableId: z
+      .string()
+      .nullable()
+      .describe("ID of the variable to bind, or null to remove the binding"),
+  },
+  async ({ nodeId, field, variableId }: any) => {
+    try {
+      const result = await sendCommandToFigma("bind_variable", { nodeId, field, variableId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error binding variable", error);
     }
   }
 );
