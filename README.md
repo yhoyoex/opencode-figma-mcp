@@ -57,6 +57,8 @@ Or for Claude Code:
 claude mcp add opencode-figma -e FIGMA_ACCESS_TOKEN=<token> -- npx -y opencode-figma-mcp@latest
 ```
 
+To install straight from GitHub instead of npm, replace `opencode-figma-mcp@latest` with `github:yhoyoex/opencode-figma-mcp` (the package is built on install). The relay works the same way: `npx -y -p github:yhoyoex/opencode-figma-mcp opencode-figma-relay`.
+
 3. Install the Figma plugin: download or clone this repository and import `src/opencode_mcp_plugin/manifest.json` in Figma (see [Figma Plugin](#figma-plugin)).
 
 ## How to use (from source)
