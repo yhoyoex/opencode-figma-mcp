@@ -331,6 +331,10 @@ When working with the Figma MCP:
 - set a default connector with `set_default_connector`,
 - and generate connector lines with `create_connections` for clear visual flow mapping.
 
+## Credits
+
+This project is based on [cursor-talk-to-figma-mcp](https://github.com/grab/cursor-talk-to-figma-mcp) by [Sonny Lazuardi](https://github.com/sonnylazuardi) and its contributors. Many thanks to the original authors for the MCP server, WebSocket relay, and Figma plugin that this project builds upon.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE). The original copyright notice from the upstream project is retained.
