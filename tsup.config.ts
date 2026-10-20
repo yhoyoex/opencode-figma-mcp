@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/opencode_figma_mcp/server.ts'],
+  entry: { server: 'src/opencode_figma_mcp/server.ts', socket: 'src/socket.ts' },
   format: ['cjs', 'esm'],
   dts: true,
   clean: true,

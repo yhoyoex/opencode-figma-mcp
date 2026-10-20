@@ -23,7 +23,43 @@ OpenCode / Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ Relay (localho
 - `src/opencode_mcp_plugin/` - Figma plugin for communicating with OpenCode
 - `src/socket.ts` - WebSocket server that facilitates communication between the MCP server and Figma plugin
 
-## How to use
+## Quick start with npm
+
+No clone needed for the MCP server and relay — only Node.js 18+.
+
+1. Start the WebSocket relay (keep it running):
+
+```bash
+npx -y -p opencode-figma-mcp opencode-figma-relay
+```
+
+2. Add the MCP server to OpenCode (`opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "opencode-figma": {
+      "type": "local",
+      "command": ["npx", "-y", "opencode-figma-mcp@latest"],
+      "enabled": true,
+      "environment": {
+        "FIGMA_ACCESS_TOKEN": "{env:FIGMA_ACCESS_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Or for Claude Code:
+
+```bash
+claude mcp add opencode-figma -e FIGMA_ACCESS_TOKEN=<token> -- npx -y opencode-figma-mcp@latest
+```
+
+3. Install the Figma plugin: download or clone this repository and import `src/opencode_mcp_plugin/manifest.json` in Figma (see [Figma Plugin](#figma-plugin)).
+
+## How to use (from source)
 
 1. Install Bun if you haven't already:
 
@@ -100,17 +136,10 @@ bun socket
 powershell -c "irm bun.sh/install.ps1|iex"
 ```
 
-2. Uncomment the hostname `0.0.0.0` in `src/socket.ts`
-
-```typescript
-// uncomment this to allow connections in windows wsl
-hostname: "0.0.0.0",
-```
-
-3. Start the websocket
+2. Start the websocket, listening on all interfaces so WSL can reach it
 
 ```bash
-bun socket
+HOST=0.0.0.0 bun socket
 ```
 
 ## Usage

@@ -516,7 +516,7 @@ var pendingRequests = /* @__PURE__ */ new Map();
 var currentChannel = null;
 var server = new McpServer({
   name: "opencode-figma-mcp",
-  version: "1.0.0"
+  version: "1.1.0"
 });
 var args = process.argv.slice(2);
 var serverArg = args.find((arg) => arg.startsWith("--server="));

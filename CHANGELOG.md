@@ -4,6 +4,16 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-20
+
+### Added
+
+- Perintah `opencode-figma-relay` di paket npm: relay WebSocket kini bisa dijalankan dengan `npx -y -p opencode-figma-mcp opencode-figma-relay` tanpa clone repo dan tanpa Bun.
+
+### Changed
+
+- Relay WebSocket kini berjalan di Node.js (juga tetap lewat `bun socket`); port dan host bisa diatur lewat env `PORT` dan `HOST` (default `127.0.0.1:3055`), sehingga untuk WSL cukup `HOST=0.0.0.0` tanpa mengedit source.
+
 ## [1.0.0] - 2026-10-20
 
 ### Added

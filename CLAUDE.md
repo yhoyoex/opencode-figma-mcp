@@ -32,7 +32,7 @@ The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. E
 `simplify.ts` converts Figma REST-format nodes (plugin `JSON_REST_V1` export or REST API) into a compact, code-oriented spec with deduplicated style references. `figma_rest.ts` is a minimal Figma REST API client (needs `FIGMA_ACCESS_TOKEN`). Used by `get_design_context` (plugin), `get_figma_design_from_url` (REST) and `download_design_assets`.
 
 ### WebSocket Relay (`src/socket.ts`)
-Lightweight Bun WebSocket server on port 3055 (configurable via `PORT` env). Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
+Lightweight WebSocket server (Node `ws`, also runs under Bun) on `127.0.0.1:3055` (configurable via `PORT` and `HOST` env). Built to `dist/socket.js` and published as the `opencode-figma-relay` bin. Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
 
 ### Figma Plugin (`src/opencode_mcp_plugin/`)
 Runs inside Figma. `code.js` is the plugin main thread handling 30+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is **not built/bundled** — `code.js` is written directly as the runtime artifact.

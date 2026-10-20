@@ -1,11 +1,149 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
-import { Server, ServerWebSocket } from "bun";
+import { createServer } from "node:http";
+import WebSocket, { WebSocketServer } from "ws";
+
+const PORT = Number(process.env.PORT) || 3055;
+// localhost only; set HOST=0.0.0.0 to allow connections from Windows WSL
+const HOST = process.env.HOST || "127.0.0.1";
 
 // Store clients by channel
-const channels = new Map<string, Set<ServerWebSocket<any>>>();
+const channels = new Map<string, Set<WebSocket>>();
 
-function handleConnection(ws: ServerWebSocket<any>) {
+function sendToPeers(channelName: string, sender: WebSocket, payload: unknown) {
+  const channelClients = channels.get(channelName);
+  if (!channelClients) return 0;
+  let count = 0;
+  channelClients.forEach((client) => {
+    if (client !== sender && client.readyState === WebSocket.OPEN) {
+      count++;
+      client.send(JSON.stringify(payload));
+    }
+  });
+  return count;
+}
+
+function handleMessage(ws: WebSocket, raw: string) {
+  const data = JSON.parse(raw);
+  console.log(`\n=== Received message from client ===`);
+  console.log(`Type: ${data.type}, Channel: ${data.channel || 'N/A'}`);
+  if (data.message?.command) {
+    console.log(`Command: ${data.message.command}, ID: ${data.id}`);
+  } else if (data.message?.result) {
+    console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
+  }
+  console.log(`Full message:`, JSON.stringify(data, null, 2));
+
+  if (data.type === "join") {
+    const channelName = data.channel;
+    if (!channelName || typeof channelName !== "string") {
+      ws.send(JSON.stringify({ type: "error", message: "Channel name is required" }));
+      return;
+    }
+
+    // Create channel if it doesn't exist
+    if (!channels.has(channelName)) {
+      channels.set(channelName, new Set());
+    }
+
+    // Add client to channel
+    const channelClients = channels.get(channelName)!;
+    channelClients.add(ws);
+
+    console.log(`\n✓ Client joined channel "${channelName}" (${channelClients.size} total clients)`);
+
+    // Notify client they joined successfully
+    ws.send(JSON.stringify({
+      type: "system",
+      message: `Joined channel: ${channelName}`,
+      channel: channelName
+    }));
+
+    ws.send(JSON.stringify({
+      type: "system",
+      message: {
+        id: data.id,
+        result: "Connected to channel: " + channelName,
+      },
+      channel: channelName
+    }));
+
+    // Notify other clients in channel
+    sendToPeers(channelName, ws, {
+      type: "system",
+      message: "A new user has joined the channel",
+      channel: channelName
+    });
+    return;
+  }
+
+  // Handle regular messages
+  if (data.type === "message") {
+    const channelName = data.channel;
+    if (!channelName || typeof channelName !== "string") {
+      ws.send(JSON.stringify({ type: "error", message: "Channel name is required" }));
+      return;
+    }
+
+    const channelClients = channels.get(channelName);
+    if (!channelClients || !channelClients.has(ws)) {
+      ws.send(JSON.stringify({ type: "error", message: "You must join the channel first" }));
+      return;
+    }
+
+    // Broadcast to all OTHER clients in the channel (not the sender)
+    // This prevents echo and ensures proper request-response flow
+    const broadcastMessage = {
+      type: "broadcast",
+      message: data.message,
+      sender: "peer",
+      channel: channelName
+    };
+    console.log(`\n=== Broadcasting ===`);
+    console.log(JSON.stringify(broadcastMessage, null, 2));
+    const broadcastCount = sendToPeers(channelName, ws, broadcastMessage);
+
+    if (broadcastCount === 0) {
+      console.log(`⚠️  No other clients in channel "${channelName}" to receive message!`);
+    } else {
+      console.log(`✓ Broadcast to ${broadcastCount} peer(s) in channel "${channelName}"`);
+    }
+  }
+
+  // Forward progress_update messages to the MCP server so it can reset
+  if (data.type === "progress_update") {
+    const channelName = data.channel;
+    if (!channelName) return;
+
+    const channelClients = channels.get(channelName);
+    if (!channelClients || !channelClients.has(ws)) return;
+
+    sendToPeers(channelName, ws, data);
+  }
+}
+
+const httpServer = createServer((req, res) => {
+  const headers: Record<string, string> = { "Access-Control-Allow-Origin": "*" };
+
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      ...headers,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    });
+    res.end();
+    return;
+  }
+
+  // Return response for non-WebSocket requests
+  res.writeHead(200, { ...headers, "Content-Type": "text/plain" });
+  res.end("WebSocket server running");
+});
+
+const wss = new WebSocketServer({ server: httpServer });
+
+wss.on("connection", (ws) => {
   // Don't add to clients immediately - wait for channel join
   console.log("New client connected");
 
@@ -15,197 +153,39 @@ function handleConnection(ws: ServerWebSocket<any>) {
     message: "Please join a channel to start chatting",
   }));
 
-  ws.close = () => {
+  ws.on("message", (message) => {
+    try {
+      handleMessage(ws, message.toString());
+    } catch (err) {
+      console.error("Error handling message:", err);
+    }
+  });
+
+  ws.on("close", () => {
     console.log("Client disconnected");
 
-    // Remove client from their channel
+    // Remove client from their channel and notify other clients
     channels.forEach((clients, channelName) => {
-      if (clients.has(ws)) {
-        clients.delete(ws);
-
-        // Notify other clients in same channel
-        clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: "system",
-              message: "A user has left the channel",
-              channel: channelName
-            }));
-          }
+      if (clients.delete(ws)) {
+        sendToPeers(channelName, ws, {
+          type: "system",
+          message: "A user has left the channel",
+          channel: channelName
         });
       }
     });
-  };
-}
-
-const server = Bun.serve({
-  port: 3055,
-  // uncomment this to allow connections in windows wsl
-  hostname: "127.0.0.1", // local patch: localhost only
-  fetch(req: Request, server: Server) {
-    // Handle CORS preflight
-    if (req.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        },
-      });
-    }
-
-    // Handle WebSocket upgrade
-    const success = server.upgrade(req, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
-
-    if (success) {
-      return; // Upgraded to WebSocket
-    }
-
-    // Return response for non-WebSocket requests
-    return new Response("WebSocket server running", {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
-  },
-  websocket: {
-    open: handleConnection,
-    message(ws: ServerWebSocket<any>, message: string | Buffer) {
-      try {
-        const data = JSON.parse(message as string);
-        console.log(`\n=== Received message from client ===`);
-        console.log(`Type: ${data.type}, Channel: ${data.channel || 'N/A'}`);
-        if (data.message?.command) {
-          console.log(`Command: ${data.message.command}, ID: ${data.id}`);
-        } else if (data.message?.result) {
-          console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
-        }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
-
-        if (data.type === "join") {
-          const channelName = data.channel;
-          if (!channelName || typeof channelName !== "string") {
-            ws.send(JSON.stringify({
-              type: "error",
-              message: "Channel name is required"
-            }));
-            return;
-          }
-
-          // Create channel if it doesn't exist
-          if (!channels.has(channelName)) {
-            channels.set(channelName, new Set());
-          }
-
-          // Add client to channel
-          const channelClients = channels.get(channelName)!;
-          channelClients.add(ws);
-
-          console.log(`\n✓ Client joined channel "${channelName}" (${channelClients.size} total clients)`);
-
-          // Notify client they joined successfully
-          ws.send(JSON.stringify({
-            type: "system",
-            message: `Joined channel: ${channelName}`,
-            channel: channelName
-          }));
-
-          ws.send(JSON.stringify({
-            type: "system",
-            message: {
-              id: data.id,
-              result: "Connected to channel: " + channelName,
-            },
-            channel: channelName
-          }));
-
-          // Notify other clients in channel
-          channelClients.forEach((client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: "system",
-                message: "A new user has joined the channel",
-                channel: channelName
-              }));
-            }
-          });
-          return;
-        }
-
-        // Handle regular messages
-        if (data.type === "message") {
-          const channelName = data.channel;
-          if (!channelName || typeof channelName !== "string") {
-            ws.send(JSON.stringify({
-              type: "error",
-              message: "Channel name is required"
-            }));
-            return;
-          }
-
-          const channelClients = channels.get(channelName);
-          if (!channelClients || !channelClients.has(ws)) {
-            ws.send(JSON.stringify({
-              type: "error",
-              message: "You must join the channel first"
-            }));
-            return;
-          }
-
-          // Broadcast to all OTHER clients in the channel (not the sender)
-          // This prevents echo and ensures proper request-response flow
-          let broadcastCount = 0;
-          channelClients.forEach((client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-              broadcastCount++;
-              const broadcastMessage = {
-                type: "broadcast",
-                message: data.message,
-                sender: "peer",
-                channel: channelName
-              };
-              console.log(`\n=== Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
-              client.send(JSON.stringify(broadcastMessage));
-            }
-          });
-          
-          if (broadcastCount === 0) {
-            console.log(`⚠️  No other clients in channel "${channelName}" to receive message!`);
-          } else {
-            console.log(`✓ Broadcast to ${broadcastCount} peer(s) in channel "${channelName}"`);
-          }
-        }
-
-        // Forward progress_update messages to the MCP server so it can reset
-        if (data.type === "progress_update") {
-          const channelName = data.channel;
-          if (!channelName) return;
-
-          const channelClients = channels.get(channelName);
-          if (!channelClients || !channelClients.has(ws)) return;
-
-          channelClients.forEach((client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify(data));
-            }
-          });
-        }
-      } catch (err) {
-        console.error("Error handling message:", err);
-      }
-    },
-    close(ws: ServerWebSocket<any>) {
-      // Remove client from their channel
-      channels.forEach((clients) => {
-        clients.delete(ws);
-      });
-    }
-  }
+  });
 });
 
-console.log(`WebSocket server running on port ${server.port}`);
+httpServer.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`Port ${PORT} is already in use. Is another relay running? Set PORT to use a different port.`);
+  } else {
+    console.error("Relay server error:", err);
+  }
+  process.exit(1);
+});
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`WebSocket server running on ${HOST}:${PORT}`);
+});
