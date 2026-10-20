@@ -1,13 +1,26 @@
-# Talk to Figma MCP
+# OpenCode Figma MCP
 
-This project implements a Model Context Protocol (MCP) integration between AI agent (Cursor, Claude Code) and Figma, allowing AI agent to communicate with Figma for reading designs and modifying them programmatically.
+**OpenCode Figma MCP** is a Model Context Protocol (MCP) server that connects AI coding agents — [OpenCode](https://opencode.ai) and Claude Code — to Figma. It works in both directions:
 
-https://github.com/user-attachments/assets/129a14d2-ed73-470f-9a4c-2240b2a4885c
+- **Design → Code**: read a frame, component, or a Figma URL and get a compact, code-oriented spec (layout, auto-layout, typography, colors, effects, variables, component props) plus downloadable SVG/PNG assets, so the agent can generate UI code that matches the design.
+- **Code → Design**: create and edit Figma content from the agent — frames, shapes, text, auto-layout, components, instances, variables, annotations, prototypes, and more (79 tools).
+
+```
+OpenCode / Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ Relay (localhost:3055) ←(WebSocket)→ Figma Plugin
+```
+
+### Highlights
+
+- **Two ways to read designs**: live from the open Figma file via the plugin (`get_design_context`), or straight from a Figma link via the REST API (`get_figma_design_from_url`, needs `FIGMA_ACCESS_TOKEN`) — no plugin required.
+- **Asset export**: `download_design_assets` saves icons and images (SVG/PNG/JPG/PDF) directly into your project.
+- **Full editing toolkit**: batch text replacement, instance override propagation, auto-layout sizing, components & variants, variables, image fills, sections, and prototype connections.
+- **Local & private**: the WebSocket relay binds to localhost and the plugin talks only to your machine.
+- **One-command setup**: `bun setup` builds the server and writes MCP config for OpenCode (`opencode.json`) and Claude Code (`.mcp.json`).
 
 ## Project Structure
 
-- `src/talk_to_figma_mcp/` - TypeScript MCP server for Figma integration
-- `src/cursor_mcp_plugin/` - Figma plugin for communicating with Cursor
+- `src/opencode_figma_mcp/` - TypeScript MCP server for Figma integration
+- `src/opencode_mcp_plugin/` - Figma plugin for communicating with OpenCode
 - `src/socket.ts` - WebSocket server that facilitates communication between the MCP server and Figma plugin
 
 ## How to use
@@ -18,7 +31,7 @@ https://github.com/user-attachments/assets/129a14d2-ed73-470f-9a4c-2240b2a4885c
 curl -fsSL https://bun.sh/install | bash
 ```
 
-2. Run setup, this will also install MCP in your Cursor's active project
+2. Run setup, this will build the server and write MCP config for OpenCode (`opencode.json`) and Claude Code (`.mcp.json`)
 
 ```bash
 bun setup
@@ -30,11 +43,7 @@ bun setup
 bun socket
 ```
 
-4. **NEW** Install Figma plugin from [Figma community page](https://www.figma.com/community/plugin/1485687494525374295/cursor-talk-to-figma-mcp-plugin) or [install locally](#figma-plugin)
-
-## Quick Video Tutorial
-
-[Video Link](https://www.linkedin.com/posts/sonnylazuardi_just-wanted-to-share-my-latest-experiment-activity-7307821553654657024-yrh8)
+4. Install the Figma plugin [locally](#figma-plugin)
 
 ## Design Automation Example
 
@@ -48,16 +57,21 @@ Propagate component instance overrides from a source instance to multiple target
 
 ## Manual Setup and Installation
 
-### MCP Server: Integration with Cursor
+### MCP Server: Integration with OpenCode
 
-Add the server to your Cursor MCP configuration in `~/.cursor/mcp.json`:
+Build the server (`bun run build`), then add it to your OpenCode config (`opencode.json` in the project or `~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "mcpServers": {
-    "TalkToFigma": {
-      "command": "bunx",
-      "args": ["cursor-talk-to-figma-mcp@latest"]
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "opencode-figma": {
+      "type": "local",
+      "command": ["bun", "/path/to/figma-mcp/dist/server.js"],
+      "enabled": true,
+      "environment": {
+        "FIGMA_ACCESS_TOKEN": "{env:FIGMA_ACCESS_TOKEN}"
+      }
     }
   }
 }
@@ -75,7 +89,7 @@ bun socket
 
 1. In Figma, go to Plugins > Development > New Plugin
 2. Choose "Link existing plugin"
-3. Select the `src/cursor_mcp_plugin/manifest.json` file
+3. Select the `src/opencode_mcp_plugin/manifest.json` file
 4. The plugin should now be available in your Figma development plugins
 
 ## Windows + WSL Guide
@@ -102,10 +116,10 @@ bun socket
 ## Usage
 
 1. Start the WebSocket server
-2. Install the MCP server in Cursor
-3. Open Figma and run the Cursor MCP Plugin
+2. Install the MCP server in OpenCode
+3. Open Figma and run the OpenCode Figma MCP plugin
 4. Connect the plugin to the WebSocket server by joining a channel using `join_channel`
-5. Use Cursor to communicate with Figma using the MCP tools
+5. Use OpenCode to communicate with Figma using the MCP tools
 
 ## Local Development Setup
 
@@ -114,9 +128,9 @@ To develop, update your mcp config to direct to your local directory.
 ```json
 {
   "mcpServers": {
-    "TalkToFigma": {
+    "opencode-figma": {
       "command": "bun",
-      "args": ["/path-to-repo/src/talk_to_figma_mcp/server.ts"]
+      "args": ["/path-to-repo/src/opencode_figma_mcp/server.ts"]
     }
   }
 }
@@ -125,6 +139,25 @@ To develop, update your mcp config to direct to your local directory.
 ## MCP Tools
 
 The MCP server provides the following tools for interacting with Figma:
+
+### Design to Code
+
+Read a design as a compact, code-oriented spec (CSS-like layout, shared style references, text, components, design tokens, assets) so OpenCode can generate UI code from it.
+
+- `get_design_context` - Read the current selection (or given node IDs) through the plugin. No token needed; Figma and the plugin must be open.
+- `get_figma_design_from_url` - Read a design from a Figma link through the REST API, without the plugin. Without `node-id` it returns the page/frame outline. Requires `FIGMA_ACCESS_TOKEN`.
+- `download_design_assets` - Save icons (SVG), illustrations and image fills to a local folder, via the plugin or the REST API.
+- `export_node_as_image` - Get a PNG of a node as a visual reference.
+
+To use the REST API tools, create a personal access token in Figma (Settings → Security → Personal access tokens, scope `file_content:read`) and export it before starting OpenCode:
+
+```bash
+export FIGMA_ACCESS_TOKEN=figd_...
+```
+
+The `opencode.json` written by `bun setup` passes it to the server with `"environment": { "FIGMA_ACCESS_TOKEN": "{env:FIGMA_ACCESS_TOKEN}" }`. `FIGMA_API_KEY` and `FIGMA_TOKEN` are also accepted.
+
+Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/design/AbC123/App?node-id=12-345, simpan ikon ke src/assets/icons."*
 
 ### Document & Selection
 
@@ -148,6 +181,15 @@ The MCP server provides the following tools for interacting with Figma:
 - `get_reactions` - Get all prototype reactions from nodes with visual highlight animation
 - `set_default_connector` - Set a copied FigJam connector as the default connector style for creating connections (must be set before creating connections)
 - `create_connections` - Create FigJam connector lines between nodes, based on prototype flows or custom mapping
+- `add_interaction` - Add a prototype interaction (trigger, action such as NAVIGATE/OVERLAY/SWAP/SCROLL_TO/CHANGE_TO/BACK/CLOSE/URL, transition) to a node
+- `set_reactions` - Replace all reactions of a node with raw Plugin API `Reaction` objects (advanced: variables, conditionals, key triggers)
+- `remove_interactions` - Remove all interactions of a node, or only those with a given trigger type
+- `get_flow_starting_points` - List prototype flow starting points of the current page
+- `set_flow_starting_point` - Add or rename a flow starting point on a top-level frame
+- `remove_flow_starting_point` - Remove a frame's flow starting point
+- `set_overlay_settings` - Read overlay settings of a frame (read-only in the Plugin API; change requests return an error with the current values)
+- `set_scroll_behavior` - Set a frame's overflow (scroll) direction and make a child FIXED or SCROLLS (STICKY_SCROLLS unsupported by the Plugin API)
+- `set_frame_properties` - Set absolute positioning inside auto-layout (`layoutPositioning`), auto-layout stacking order (`itemReverseZIndex`), clip content, and x/y
 
 ### Creating Elements
 
@@ -155,6 +197,7 @@ The MCP server provides the following tools for interacting with Figma:
 - `create_frame` - Create a new frame with position, size, and optional name
 - `create_section` - Create a section to group related content on the canvas
 - `create_text` - Create a new text node with customizable font properties
+- `create_node_from_svg` - Create editable vector nodes from SVG markup (e.g. replace PNG icons with vectors), optionally inside a parent at a given position
 
 ### Modifying text content
 
@@ -167,7 +210,7 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_layout_mode` - Set the layout mode and wrap behavior of a frame (NONE, HORIZONTAL, VERTICAL)
 - `set_padding` - Set padding values for an auto-layout frame (top, right, bottom, left)
 - `set_axis_align` - Set primary and counter axis alignment for auto-layout frames
-- `set_layout_sizing` - Set horizontal and vertical sizing modes for auto-layout frames (FIXED, HUG, FILL)
+- `set_layout_sizing` - Set horizontal and vertical sizing modes (FIXED, HUG, FILL) for frames, components, instances and text; HUG needs auto-layout or text, FILL needs an auto-layout parent
 - `set_item_spacing` - Set distance between children in an auto-layout frame
 
 ### Styling
@@ -190,6 +233,17 @@ The MCP server provides the following tools for interacting with Figma:
 ### Components & Styles
 
 - `get_styles` - Get information about local styles
+- `create_text_style` - Create a local text style (font, size, line height, letter spacing, case, decoration)
+- `update_text_style` - Update an existing local text style
+- `apply_text_style` - Apply a text style to one or more text nodes (including text inside instances)
+- `set_text_decoration` - Set underline, strikethrough or none on text nodes, optionally for a character range
+- `set_visible` - Show or hide nodes, including children inside instances (visibility override)
+- `get_main_component` - Read the main component / variant of instances directly in the plugin (no REST API)
+- `delete_style` - Delete a local text, paint, effect or grid style
+- `set_effects` - Set drop/inner shadows and layer/background blur on a node (empty array clears)
+- `create_effect_style` - Create a local effect style (shadow/blur token)
+- `update_effect_style` - Update the name, description or effects of an effect style
+- `apply_effect_style` - Apply an effect style to one or more nodes (`''` detaches)
 - `get_local_components` - Get information about local components
 - `create_component_instance` - Create an instance of a component
 - `get_instance_overrides` - Extract override properties from a selected component instance
@@ -205,6 +259,8 @@ The MCP server provides the following tools for interacting with Figma:
 - `create_variable_collection` - Create a variable collection with named modes (extra modes may require a paid plan)
 - `create_variable` - Create a COLOR, FLOAT, STRING or BOOLEAN variable, with optional value and scopes
 - `set_variable_value` - Set a variable value for a mode (literal or alias via `{ aliasOf: variableId }`)
+- `delete_variable` - Permanently delete a variable (destructive; bound nodes lose the binding)
+- `delete_variable_collection` - Permanently delete a collection with all its variables and modes (destructive)
 - `bind_variable` - Bind (or unbind with `variableId: null`) a variable to fills/strokes, size, spacing, padding, corner radius, stroke weight, opacity, characters or visibility
 
 ### Export & Advanced
@@ -219,6 +275,7 @@ The MCP server provides the following tools for interacting with Figma:
 
 The MCP server includes several helper prompts to guide you through complex design tasks:
 
+- `design_to_code` - Workflow for turning a Figma design into code (read spec, map tokens, export assets, verify)
 - `design_strategy` - Best practices for working with Figma designs
 - `read_design_strategy` - Best practices for reading Figma designs
 - `text_replacement_strategy` - Systematic approach for replacing text in Figma designs
@@ -233,7 +290,7 @@ The MCP server includes several helper prompts to guide you through complex desi
 1. Navigate to the Figma plugin directory:
 
    ```
-   cd src/cursor_mcp_plugin
+   cd src/opencode_mcp_plugin
    ```
 
 2. Edit code.js and ui.html

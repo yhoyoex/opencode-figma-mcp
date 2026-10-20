@@ -1,4 +1,4 @@
-# README for AI Agent: Cursor-Figma MCP Setup Guide
+# README for AI Agent: OpenCode-Figma MCP Setup Guide
 
 ## 🤖 AI Agent Decision Flow
 
@@ -9,9 +9,9 @@ flowchart TD
     B -->|❌ Failed| Z[❌ Fix Prerequisites]
     
     C -->|✅ Yes| D[Method A: Full Install<br/>Homebrew + Bun]
-    C -->|❌ No| E[Method B: Cursor-Only<br/>No System Changes]
+    C -->|❌ No| E[Method B: OpenCode-Only<br/>No System Changes]
     
-    D --> F[Clone in Cursor]
+    D --> F[Clone in OpenCode]
     E --> F
     
     F --> G[Configure MCP]
@@ -28,7 +28,7 @@ flowchart TD
 
 ## 🎯 Objective
 
-Install and configure Cursor-Figma MCP integration with **AI-agent-friendly decision trees** and fail-safe checkpoints at each step. This guide uses Cursor's built-in Git clone functionality to directly clone the official repository, simplifying the setup process.
+Install and configure OpenCode-Figma MCP integration with **AI-agent-friendly decision trees** and fail-safe checkpoints at each step. This guide uses OpenCode's built-in Git clone functionality to directly clone the official repository, simplifying the setup process.
 
 ### 🤖 For AI Agents Reading This Guide
 
@@ -80,9 +80,9 @@ if [ "$BUN_AVAILABLE" = "YES" ]; then
     echo "BUN_VERSION: $BUN_VERSION"
 fi
 
-# 6. Cursor IDE Availability
-CURSOR_AVAILABLE=$(which cursor >/dev/null 2>&1 && echo "YES" || echo "NO")
-echo "CURSOR_AVAILABLE: $CURSOR_AVAILABLE"
+# 6. OpenCode Availability
+OPENCODE_AVAILABLE=$(which opencode >/dev/null 2>&1 && echo "YES" || echo "NO")
+echo "OPENCODE_AVAILABLE: $OPENCODE_AVAILABLE"
 
 # 7. Git Availability
 GIT_AVAILABLE=$(which git >/dev/null 2>&1 && echo "YES" || echo "NO")
@@ -172,7 +172,7 @@ graph LR
     A3 --> A4[✅ Ready for WebSocket]
 ```
 
-#### For Method B (Cursor-Only):
+#### For Method B (OpenCode-Only):
 ```mermaid
 graph LR
     B1[🖥️ Project Already Open] --> B2[📖 Setup Dependencies]
@@ -218,14 +218,14 @@ Based on the detection results above, AI agents should follow this decision tree
 HOMEBREW_AVAILABLE="YES"  # or "NO"
 NODE_AVAILABLE="YES"      # or "NO" 
 BUN_AVAILABLE="YES"       # or "NO"
-CURSOR_AVAILABLE="YES"    # or "NO"
+OPENCODE_AVAILABLE="YES"    # or "NO"
 SUDO_AVAILABLE="YES"      # or "NO"
 ```
 
 **Decision Tree**:
 - IF `HOMEBREW_AVAILABLE="YES"` AND `SUDO_AVAILABLE="YES"` → **Method A1: Homebrew Installation**
 - ELIF `SUDO_AVAILABLE="YES"` AND `HOMEBREW_AVAILABLE="NO"` → **Method A2: Direct Installation**  
-- ELIF `CURSOR_AVAILABLE="YES"` AND `SUDO_AVAILABLE="NO"` → **Method B: Cursor-Only Setup**
+- ELIF `OPENCODE_AVAILABLE="YES"` AND `SUDO_AVAILABLE="NO"` → **Method B: OpenCode-Only Setup**
 - ELSE → **Error: Insufficient System Access**
 
 ## 🛡️ Method Selection Based on Environment
@@ -242,10 +242,10 @@ SUDO_AVAILABLE="YES"      # or "NO"
 - For systems without Homebrew but with admin access
 - Manual dependency management
 
-### 📱 Method B: Cursor-Only Setup
-**Conditions**: `CURSOR_AVAILABLE="YES"` AND `SUDO_AVAILABLE="NO"`
+### 📱 Method B: OpenCode-Only Setup
+**Conditions**: `OPENCODE_AVAILABLE="YES"` AND `SUDO_AVAILABLE="NO"`
 - No system-wide installations
-- Uses Cursor's built-in capabilities
+- Uses OpenCode's built-in capabilities
 - For restricted environments
 
 ---
@@ -321,7 +321,7 @@ echo "=== DEPENDENCY VERIFICATION ==="
 node --version && echo "✅ Node.js working"
 bun --version && echo "✅ Bun working"  
 git --version && echo "✅ Git working"
-which cursor && echo "✅ Cursor available" || echo "❌ Install Cursor IDE manually"
+which opencode && echo "✅ OpenCode available" || echo "❌ Install OpenCode manually"
 ```
 
 **CHECKPOINT A1.1**: All dependencies must show ✅ before proceeding.
@@ -353,13 +353,13 @@ graph TD
 
 ### Step A1.2: MCP Setup via Homebrew Method
 
-**🎯 Project is already cloned and open in Cursor IDE**
+**🎯 Project is already cloned and open in OpenCode**
 
 1. **Verify project structure**:
 
 ```bash
-# Verify current directory (should already be in cursor-talk-to-figma-mcp)
-pwd | grep "cursor-talk-to-figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
+# Verify current directory (should already be in opencode-figma-mcp)
+pwd | grep "figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
 
 # Verify project structure
 ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: Invalid project structure"
@@ -372,7 +372,7 @@ bun run build
 bun setup && echo "✅ Setup complete" || echo "❌ ERROR: Setup failed"
 
 # Verify MCP config was created
-test -f .cursor/mcp.json && echo "✅ MCP config created" || echo "❌ ERROR: MCP config missing"
+test -f opencode.json && echo "✅ MCP config created" || echo "❌ ERROR: MCP config missing"
 ```
 
 **AI AGENTS**: Update progress after Method A1 completion:
@@ -484,20 +484,20 @@ graph TD
 
 ### Step A2.2: MCP Setup via Direct Method
 
-**🎯 Project is already cloned and open in Cursor IDE**
+**🎯 Project is already cloned and open in OpenCode**
 
 1. **Verify project setup**:
 
 ```bash
-# Verify current directory (should already be in cursor-talk-to-figma-mcp)
-pwd | grep "cursor-talk-to-figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
+# Verify current directory (should already be in opencode-figma-mcp)
+pwd | grep "figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
 
 # Verify and setup
 ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: Invalid project structure"
 bun install
 bun run build
 bun setup && echo "✅ Setup complete" || echo "❌ ERROR: Setup failed"
-test -f .cursor/mcp.json && echo "✅ MCP config created" || echo "❌ ERROR: MCP config missing"
+test -f opencode.json && echo "✅ MCP config created" || echo "❌ ERROR: MCP config missing"
 ```
 
 **AI AGENTS**: Update progress after Method A2 completion:
@@ -526,14 +526,14 @@ Progress: Method A2 100% Complete ✅ - Proceeding to Common Steps
 
 ---
 
-## 📱 Method B: Cursor-Only Setup
+## 📱 Method B: OpenCode-Only Setup
 
 ### 📊 Progress Tracking for Method B
 
 **AI AGENTS**: Start by creating Method B progress diagram:
 
 ```
-CHECKPOINT 1: STARTING METHOD B - CURSOR-ONLY SETUP
+CHECKPOINT 1: STARTING METHOD B - OPENCODE-ONLY SETUP
 
 Please create the Method B progress tracking diagram:
 
@@ -557,24 +557,24 @@ graph TD
 
 ### Prerequisites Check for Method B
 ```bash
-# Verify Cursor-only setup conditions
-[ "$CURSOR_AVAILABLE" = "YES" ] && echo "✅ Cursor IDE available" || echo "❌ ERROR: Install Cursor IDE first"
+# Verify OpenCode-only setup conditions
+[ "$OPENCODE_AVAILABLE" = "YES" ] && echo "✅ OpenCode available" || echo "❌ ERROR: Install OpenCode first"
 [ "$SUDO_AVAILABLE" = "NO" ] && echo "✅ Restricted environment confirmed" || echo "⚠️ Admin access available, consider Method A"
 ```
 
-### Step B.1: Verify Project is Open in Cursor
+### Step B.1: Verify Project is Open in OpenCode
 
-**🎯 Project is already cloned and open in Cursor IDE**
+**🎯 Project is already cloned and open in OpenCode**
 
 1. **Verify project is properly loaded**:
-   - Confirm Cursor IDE has the project open
-   - Open terminal in Cursor: `Terminal > New Terminal` (or `Ctrl+Shift+`)
+   - Confirm OpenCode has the project open
+   - Open terminal in OpenCode: `Terminal > New Terminal` (or `Ctrl+Shift+`)
 
-### Step B.2: Setup Dependencies in Cursor
+### Step B.2: Setup Dependencies in OpenCode
 
 ```bash
-# Verify current directory (should already be in cursor-talk-to-figma-mcp)
-pwd | grep "cursor-talk-to-figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
+# Verify current directory (should already be in opencode-figma-mcp)
+pwd | grep "figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
 
 # Verify project structure
 ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: Invalid project structure"
@@ -583,7 +583,7 @@ ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: In
 **AI AGENTS**: Update progress after project cloning:
 
 ```
-CHECKPOINT 2: PROJECT CLONED IN CURSOR
+CHECKPOINT 2: PROJECT CLONED IN OPENCODE
 
 Update Method B progress - project cloned successfully:
 
@@ -605,9 +605,9 @@ graph TD
 ```
 ```
 
-### Step B.3: Follow README Setup in Cursor
+### Step B.3: Follow README Setup in OpenCode
 
-**📖 CRITICAL FOR AI AGENTS**: Ask the AI assistant in Cursor to read and execute the README:
+**📖 CRITICAL FOR AI AGENTS**: Ask the AI assistant in OpenCode to read and execute the README:
 
 ```
 Please read the @readme.md file and help me set up this project by following the installation instructions step by step.
@@ -659,17 +659,17 @@ Progress: Method B 100% Complete ✅ - Proceeding to Common Steps
 
 ### Step C.1: Verify MCP Configuration
 
-**🚨 CRITICAL FOR AI AGENTS**: Project is already cloned and open in Cursor.
+**🚨 CRITICAL FOR AI AGENTS**: Project is already cloned and open in OpenCode.
 
 ```bash
-# Verify current directory (should already be in cursor-talk-to-figma-mcp)
-pwd | grep "cursor-talk-to-figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
+# Verify current directory (should already be in opencode-figma-mcp)
+pwd | grep "figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
 
 # Verify project structure
 ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: Invalid project structure"
 
 # Verify MCP config exists (created by bun setup)
-if [ -f ".cursor/mcp.json" ]; then
+if [ -f "opencode.json" ]; then
     echo "✅ MCP config found"
 else
     echo "⚠️ MCP config not found - running setup..."
@@ -679,12 +679,12 @@ fi
 echo "✅ Project verified - MCP should be configured"
 ```
 
-**CHECKPOINT C.1**: Verify in Cursor:
+**CHECKPOINT C.1**: Verify in OpenCode:
 1. Open Settings (`Cmd+,` on Mac, `Ctrl+,` on Windows/Linux)
 2. Search "MCP"  
-3. Confirm "TalkToFigma" shows as "Connected"
+3. Confirm "opencode-figma" shows as "Connected"
 
-**AI AGENTS**: Update overall progress after Cursor launch:
+**AI AGENTS**: Update overall progress after OpenCode launch:
 
 ```
 CHECKPOINT 3: MCP SETUP AND CONFIGURATION COMPLETE
@@ -719,7 +719,7 @@ To ensure stability and easy monitoring, we will run the WebSocket server in the
 
 **How to Start and Monitor the Server:**
 
-1.  **Start the Server**: Open a new terminal in Cursor and run the following command. The terminal will become unresponsive, which means the server is running correctly.
+1.  **Start the Server**: Open a new terminal in OpenCode and run the following command. The terminal will become unresponsive, which means the server is running correctly.
     ```bash
     # Runs the server in the foreground and saves all logs to websocket.log
     bun socket > websocket.log 2>&1
@@ -737,10 +737,10 @@ To ensure stability and easy monitoring, we will run the WebSocket server in the
 
 ### 🔍 Verify WebSocket Server Status
 
-**🚨 CRITICAL FOR AI AGENTS**: Use Cursor's `@Terminals` to monitor WebSocket server status:
+**🚨 CRITICAL FOR AI AGENTS**: Use OpenCode's `@Terminals` to monitor WebSocket server status:
 
 1. **Check Active Terminals**:
-   - In Cursor, type `@Terminals` in chat
+   - In OpenCode, type `@Terminals` in chat
    - This will show all currently running terminal processes
    - Verify you can see the WebSocket server terminal running
    - Confirm the server shows "WebSocket server running on port 3055" message
@@ -755,7 +755,7 @@ To ensure stability and easy monitoring, we will run the WebSocket server in the
    ```
 
 3. **Monitor Server Logs**:
-   - Keep the WebSocket terminal visible in Cursor
+   - Keep the WebSocket terminal visible in OpenCode
    - Watch for connection messages when Figma plugin connects
    - Server logs will show plugin connection status in real-time
 
@@ -792,15 +792,15 @@ Progress: 63% Complete - WebSocket Running ✅ - Installing Figma Plugin
 
 ### Step C.3: Install and Configure Figma Plugin
 
-#### 🔌 Install the Community Plugin
+#### 🔌 Install the Plugin Locally
 
-1. **Open the Plugin Page**:
-   - Navigate to: https://www.figma.com/community/plugin/1485687494525374295/cursor-talk-to-figma-mcp-plugin
-   - Click **"Install"** to add the plugin to your Figma account
+1. **Link the Development Plugin** (Figma desktop app):
+   - Go to `Plugins` menu → `Development` → `Import plugin from manifest...`
+   - Select `src/opencode_mcp_plugin/manifest.json` in the cloned `opencode-figma-mcp` folder
 
 2. **Open Figma and Run the Plugin**:
    - Open any Figma file (or create a new one)
-   - Go to `Plugins` menu → `Cursor Talk to Figma MCP Plugin`
+   - Go to `Plugins` menu → `Development` → `OpenCode Figma MCP`
    - The plugin panel will open
 
 #### ⚙️ Configure Plugin to Connect to Local WebSocket
@@ -818,10 +818,10 @@ Progress: 63% Complete - WebSocket Running ✅ - Installing Figma Plugin
 
 #### 📡 Monitor Connection Status Using @Terminals
 
-**🔍 IMPORTANT FOR AI AGENTS**: Use Cursor's `@Terminals` to verify the plugin connection:
+**🔍 IMPORTANT FOR AI AGENTS**: Use OpenCode's `@Terminals` to verify the plugin connection:
 
 1. **Check WebSocket Server Logs**:
-   - In Cursor, type `@Terminals` in chat
+   - In OpenCode, type `@Terminals` in chat
    - Look at the WebSocket server terminal
    - When plugin connects successfully, you should see log messages like:
      ```
@@ -867,9 +867,9 @@ Progress: 75% Complete - Plugin Installed ✅ - Running Integration Tests
 
 ### Step C.4: Test Integration
 
-#### 🧪 Test MCP Commands in Cursor
+#### 🧪 Test MCP Commands in OpenCode
 
-**In Cursor (where MCP is connected):**
+**In OpenCode (where MCP is connected):**
 
 ```bash
 # Test 1: MCP Connection
@@ -886,15 +886,15 @@ get_document_info
 **🔍 FINAL VERIFICATION FOR AI AGENTS**:
 
 1. **Check All Active Processes**:
-   - In Cursor, type `@Terminals` in chat
+   - In OpenCode, type `@Terminals` in chat
    - Verify you can see:
      - ✅ **WebSocket server terminal** still running with "WebSocket server running on port 3055"
      - ✅ **Connection logs** showing Figma plugin is connected
-     - ✅ **MCP status** showing TalkToFigma as connected
+     - ✅ **MCP status** showing opencode-figma as connected
 
 2. **Test End-to-End Communication**:
    ```bash
-   # In Cursor chat, test these MCP commands:
+   # In OpenCode chat, test these MCP commands:
    get_document_info
    get_selection
    ```
@@ -943,7 +943,7 @@ graph TD
 - ✅ Integration Tests Passed
 - ✅ **READY TO USE!**
 
-**🚀 AI Agent can now assist with Figma design tasks through Cursor!**
+**🚀 AI Agent can now assist with Figma design tasks through OpenCode!**
 ```
 
 ---
@@ -953,8 +953,8 @@ graph TD
 ### Issue: Prerequisites Failed
 ```bash
 # Decision tree for prerequisite failures
-if [ "$CURSOR_AVAILABLE" = "NO" ]; then
-    echo "❌ CRITICAL: Install Cursor IDE first - https://cursor.sh/"
+if [ "$OPENCODE_AVAILABLE" = "NO" ]; then
+    echo "❌ CRITICAL: Install OpenCode first - https://opencode.ai/"
     exit 1
 elif [ "$GIT_AVAILABLE" = "NO" ]; then
     echo "❌ CRITICAL: Install Git first"
@@ -972,20 +972,20 @@ echo "🔍 Debugging MCP connection..."
 # Check if in correct project directory
 if [ ! -f "package.json" ] || [ ! -d "src" ]; then
     echo "❌ Not in project directory"
-    echo "💡 Please ensure you're in the cloned cursor-talk-to-figma-mcp directory"
-    echo "💡 Use Cursor's File > Open Folder to open the cloned project"
+    echo "💡 Please ensure you're in the cloned opencode-figma-mcp directory"
+    echo "💡 Use OpenCode's File > Open Folder to open the cloned project"
     exit 1
 fi
 
 # Check if MCP config exists
-if [ ! -f ".cursor/mcp.json" ]; then
+if [ ! -f "opencode.json" ]; then
     echo "⚠️ MCP config missing - running setup..."
     bun setup
 fi
 
-# Restart Cursor if needed
-echo "💡 Restarting Cursor to reload MCP configuration..."
-cursor .
+# Restart OpenCode if needed
+echo "💡 Restarting OpenCode to reload MCP configuration..."
+opencode .
 sleep 5
 ```
 
@@ -995,7 +995,7 @@ sleep 5
 echo "🔍 Debugging WebSocket connection..."
 
 # Step 1: Use @Terminals to check current state
-echo "💡 First, type '@Terminals' in Cursor chat to see all running processes"
+echo "💡 First, type '@Terminals' in OpenCode chat to see all running processes"
 echo "💡 Look for WebSocket server terminal and check its status"
 
 # Check if port is in use
@@ -1026,7 +1026,7 @@ echo "💡 Look for 'WebSocket server running on port 3055' message"
 # AI Agent plugin debugging  
 echo "🔍 Debugging Figma plugin connection..."
 
-echo "💡 Use '@Terminals' in Cursor to check WebSocket server logs"
+echo "💡 Use '@Terminals' in OpenCode to check WebSocket server logs"
 echo "💡 You should see connection attempts from Figma plugin"
 
 # Common plugin connection issues:
@@ -1058,7 +1058,7 @@ elif [ "$SUDO_AVAILABLE" = "YES" ]; then
     source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null || true
 else
     echo "❌ Cannot install runtime in restricted environment"
-    echo "💡 Try Method B: Cursor-Only Setup"
+    echo "💡 Try Method B: OpenCode-Only Setup"
     exit 1
 fi
 ```
@@ -1077,7 +1077,7 @@ echo "=== FINAL VERIFICATION MATRIX ==="
 [ "$OS_TYPE" != "" ] && echo "✅ OS Detection: $OS_TYPE" || echo "❌ OS Detection Failed"
 
 # Required Tools  
-[ "$CURSOR_AVAILABLE" = "YES" ] && echo "✅ Cursor IDE Available" || echo "❌ Cursor Missing"
+[ "$OPENCODE_AVAILABLE" = "YES" ] && echo "✅ OpenCode Available" || echo "❌ OpenCode Missing"
 [ "$GIT_AVAILABLE" = "YES" ] && echo "✅ Git Available" || echo "❌ Git Missing"
 
 # Runtime Environment
@@ -1090,7 +1090,7 @@ else
 fi
 
 # Project Setup
-[ -f ".cursor/mcp.json" ] && echo "✅ MCP Config Present" || echo "❌ MCP Config Missing"
+[ -f "opencode.json" ] && echo "✅ MCP Config Present" || echo "❌ MCP Config Missing"
 [ -f "package.json" ] && echo "✅ Project Structure Valid" || echo "❌ Invalid Project"
 
 # Process Status
@@ -1102,7 +1102,7 @@ fi
 ```
 
 ### Functional Verification
-**Execute in Cursor with MCP connected:**
+**Execute in OpenCode with MCP connected:**
 
 1. **MCP Connection Test**: `join_channel` → Should return success message
 2. **Figma Communication Test**: `get_document_info` → Should return JSON data
@@ -1114,12 +1114,12 @@ fi
 - ✅ Appropriate method selected and executed based on system capabilities  
 - ✅ Project successfully cloned and configured
 - ✅ MCP configuration file present and valid
-- ✅ Cursor IDE launched from project directory
-- ✅ MCP shows "TalkToFigma" as "Connected" in settings
+- ✅ OpenCode launched from project directory
+- ✅ MCP shows "opencode-figma" as "Connected" in settings
 - ✅ WebSocket server running on port 3055 (verified via `@Terminals`)
 - ✅ Figma plugin installed, configured with `ws://localhost:3055`, and connected
 - ✅ Plugin connection visible in WebSocket server logs (check `@Terminals`)
-- ✅ `join_channel` command works in Cursor
+- ✅ `join_channel` command works in OpenCode
 - ✅ `get_document_info` returns Figma document data
 - ✅ All processes healthy and running (verified via `@Terminals`)
 
@@ -1129,26 +1129,26 @@ fi
 
 ## 🚀 AI Agent Quick Commands
 
-### Recommended Setup (Use Cursor's Built-in Git Clone)
+### Recommended Setup (Use OpenCode's Built-in Git Clone)
 **AI AGENTS**: Instead of terminal commands, guide users to:
 
-1. **Open Cursor IDE**
+1. **Open OpenCode**
 2. **Clone Repository**: Use `Cmd+Shift+P` → "Git: Clone"
-3. **Enter URL**: `https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp.git`
+3. **Enter URL**: `https://github.com/yhoyoex/opencode-figma-mcp.git`
 4. **Select location and clone**
-5. **Open cloned project in Cursor**
+5. **Open cloned project in OpenCode**
 6. **Run setup**: `bun setup`
 
 ### Alternative One-Line Commands (For Advanced Users)
 ```bash
-# Method A1 (Homebrew) - Clone and auto-open in Cursor
-[ "$HOMEBREW_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp.git && cd cursor-talk-to-figma-mcp && brew install bun && bun setup && cursor .
+# Method A1 (Homebrew) - Clone and auto-open in OpenCode
+[ "$HOMEBREW_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/yhoyoex/opencode-figma-mcp.git && cd opencode-figma-mcp && brew install bun && bun setup && opencode .
 
-# Method A2 (Direct) - Clone and auto-open in Cursor
-[ "$SUDO_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp.git && cd cursor-talk-to-figma-mcp && curl -fsSL https://bun.sh/install | bash && source ~/.zshrc && bun setup && cursor .
+# Method A2 (Direct) - Clone and auto-open in OpenCode
+[ "$SUDO_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/yhoyoex/opencode-figma-mcp.git && cd opencode-figma-mcp && curl -fsSL https://bun.sh/install | bash && source ~/.zshrc && bun setup && opencode .
 
-# Method B (Cursor-only) - Clone and open manually
-[ "$CURSOR_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp.git && echo "✅ Project cloned to ~/Desktop/cursor-talk-to-figma-mcp" && echo "💡 Open this folder in Cursor and run 'bun setup'"
+# Method B (OpenCode-only) - Clone and open manually
+[ "$OPENCODE_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/yhoyoex/opencode-figma-mcp.git && echo "✅ Project cloned to ~/Desktop/opencode-figma-mcp" && echo "💡 Open this folder in OpenCode and run 'bun setup'"
 ```
 
 ### Service Management
@@ -1165,10 +1165,10 @@ ps aux | grep -E "(bun socket|node.*socket)" || echo "WebSocket server not runni
 
 ### 📊 Monitor Services Using @Terminals
 
-**🔍 RECOMMENDED FOR AI AGENTS**: Use Cursor's `@Terminals` for real-time monitoring:
+**🔍 RECOMMENDED FOR AI AGENTS**: Use OpenCode's `@Terminals` for real-time monitoring:
 
 1. **Check Active Services**:
-   - Type `@Terminals` in Cursor chat anytime
+   - Type `@Terminals` in OpenCode chat anytime
    - Instantly see all running terminal processes
    - Verify WebSocket server status without additional commands
 
@@ -1182,4 +1182,4 @@ ps aux | grep -E "(bun socket|node.*socket)" || echo "WebSocket server not runni
    - Displays connection status and recent activity
    - No need for additional terminal commands
 
-**Remember**: Always keep the WebSocket server running for the Figma plugin to communicate with Cursor! Use `@Terminals` to monitor its health. 
+**Remember**: Always keep the WebSocket server running for the Figma plugin to communicate with OpenCode! Use `@Terminals` to monitor its health. 

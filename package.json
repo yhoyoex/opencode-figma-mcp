@@ -1,11 +1,29 @@
 {
-  "name": "cursor-talk-to-figma-mcp",
-  "description": "Cursor Talk to Figma MCP",
+  "name": "opencode-figma-mcp",
+  "description": "MCP server that connects OpenCode and Claude Code to Figma: turn Figma designs into code specs and assets, and create or edit Figma designs from your AI agent",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yhoyoex/opencode-figma-mcp.git"
+  },
+  "homepage": "https://github.com/yhoyoex/opencode-figma-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/yhoyoex/opencode-figma-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "figma",
+    "figma-plugin",
+    "opencode",
+    "claude-code",
+    "design-to-code",
+    "ai"
+  ],
   "version": "0.3.5",
   "module": "dist/server.js",
   "main": "dist/server.js",
   "bin": {
-    "cursor-talk-to-figma-mcp": "dist/server.js"
+    "opencode-figma-mcp": "dist/server.js"
   },
   "files": [
     "dist",

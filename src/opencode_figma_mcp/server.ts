@@ -5,7 +5,20 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
-import { readFile } from "fs/promises";
+import { readFile, writeFile, mkdir } from "fs/promises";
+import path from "path";
+import { simplifyBundles, type VariableInfo } from "./design/simplify.js";
+import {
+  downloadBytes,
+  getFigmaToken,
+  getFileNodes,
+  getFileOutline,
+  getImageFillUrls,
+  getImageRenderUrls,
+  getLocalVariables as getRestLocalVariables,
+  normalizeNodeId,
+  parseFigmaUrl,
+} from "./design/figma_rest.js";
 
 // Define TypeScript interfaces for Figma responses
 interface FigmaResponse {
@@ -16,10 +29,10 @@ interface FigmaResponse {
 
 // Define interface for command progress updates
 interface CommandProgressUpdate {
-  type: 'command_progress';
+  type: "command_progress";
   commandId: string;
   commandType: string;
-  status: 'started' | 'in_progress' | 'completed' | 'error';
+  status: "started" | "in_progress" | "completed" | "error";
   progress: number;
   totalItems: number;
   processedItems: number;
@@ -59,32 +72,36 @@ const logger = {
   debug: (message: string) => process.stderr.write(`[DEBUG] ${message}\n`),
   warn: (message: string) => process.stderr.write(`[WARN] ${message}\n`),
   error: (message: string) => process.stderr.write(`[ERROR] ${message}\n`),
-  log: (message: string) => process.stderr.write(`[LOG] ${message}\n`)
+  log: (message: string) => process.stderr.write(`[LOG] ${message}\n`),
 };
 
 // WebSocket connection and request tracking
 let ws: WebSocket | null = null;
-const pendingRequests = new Map<string, {
-  resolve: (value: unknown) => void;
-  reject: (reason: unknown) => void;
-  timeout: ReturnType<typeof setTimeout>;
-  lastActivity: number; // Add timestamp for last activity
-}>();
+const pendingRequests = new Map<
+  string,
+  {
+    resolve: (value: unknown) => void;
+    reject: (reason: unknown) => void;
+    timeout: ReturnType<typeof setTimeout>;
+    lastActivity: number; // Add timestamp for last activity
+  }
+>();
 
 // Track which channel each client is in
 let currentChannel: string | null = null;
 
 // Create MCP server
 const server = new McpServer({
-  name: "TalkToFigmaMCP",
+  name: "opencode-figma-mcp",
   version: "1.0.0",
 });
 
 // Add command line argument parsing
 const args = process.argv.slice(2);
-const serverArg = args.find(arg => arg.startsWith('--server='));
-const serverUrl = serverArg ? serverArg.split('=')[1] : 'localhost';
-const WS_URL = serverUrl === 'localhost' ? `ws://${serverUrl}` : `wss://${serverUrl}`;
+const serverArg = args.find((arg) => arg.startsWith("--server="));
+const serverUrl = serverArg ? serverArg.split("=")[1] : "localhost";
+const WS_URL =
+  serverUrl === "localhost" ? `ws://${serverUrl}` : `wss://${serverUrl}`;
 
 // Document Info Tool
 server.tool(
@@ -98,22 +115,23 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
+            text: JSON.stringify(result),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error getting document info: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error getting document info: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Selection Tool
@@ -128,22 +146,23 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
+            text: JSON.stringify(result),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error getting selection: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error getting selection: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Read My Design Tool
@@ -158,22 +177,23 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
+            text: JSON.stringify(result),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error getting node info: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error getting node info: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Node Info Tool
@@ -190,27 +210,28 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(filterFigmaNode(result))
-          }
-        ]
+            text: JSON.stringify(filterFigmaNode(result)),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error getting node info: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error getting node info: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 function rgbaToHex(color: any): string {
   // skip if color is already hex
-  if (color.startsWith('#')) {
+  if (color.startsWith("#")) {
     return color;
   }
 
@@ -219,7 +240,7 @@ function rgbaToHex(color: any): string {
   const b = Math.round(color.b * 255);
   const a = Math.round(color.a * 255);
 
-  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}${a === 255 ? '' : a.toString(16).padStart(2, '0')}`;
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}${a === 255 ? "" : a.toString(16).padStart(2, "0")}`;
 }
 
 function filterFigmaNode(node: any) {
@@ -244,16 +265,18 @@ function filterFigmaNode(node: any) {
 
       // Process gradientStops if present
       if (processedFill.gradientStops) {
-        processedFill.gradientStops = processedFill.gradientStops.map((stop: any) => {
-          const processedStop = { ...stop };
-          // Convert color to hex if present
-          if (processedStop.color) {
-            processedStop.color = rgbaToHex(processedStop.color);
-          }
-          // Remove boundVariables
-          delete processedStop.boundVariables;
-          return processedStop;
-        });
+        processedFill.gradientStops = processedFill.gradientStops.map(
+          (stop: any) => {
+            const processedStop = { ...stop };
+            // Convert color to hex if present
+            if (processedStop.color) {
+              processedStop.color = rgbaToHex(processedStop.color);
+            }
+            // Remove boundVariables
+            delete processedStop.boundVariables;
+            return processedStop;
+          },
+        );
       }
 
       // Convert solid fill colors to hex
@@ -298,7 +321,7 @@ function filterFigmaNode(node: any) {
       fontSize: node.style.fontSize,
       textAlignHorizontal: node.style.textAlignHorizontal,
       letterSpacing: node.style.letterSpacing,
-      lineHeightPx: node.style.lineHeightPx
+      lineHeightPx: node.style.lineHeightPx,
     };
   }
 
@@ -316,38 +339,42 @@ server.tool(
   "get_nodes_info",
   "Get detailed information about multiple nodes in Figma",
   {
-    nodeIds: z.array(z.string()).describe("Array of node IDs to get information about")
+    nodeIds: z
+      .array(z.string())
+      .describe("Array of node IDs to get information about"),
   },
   async ({ nodeIds }: any) => {
     try {
       const results = await Promise.all(
         nodeIds.map(async (nodeId: any) => {
-          const result = await sendCommandToFigma('get_node_info', { nodeId });
+          const result = await sendCommandToFigma("get_node_info", { nodeId });
           return { nodeId, info: result };
-        })
+        }),
       );
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(results.map((result) => filterFigmaNode(result.info)))
-          }
-        ]
+            text: JSON.stringify(
+              results.map((result) => filterFigmaNode(result.info)),
+            ),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error getting nodes info: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error getting nodes info: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
-
 
 // Create Rectangle Tool
 server.tool(
@@ -387,13 +414,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error creating rectangle: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error creating rectangle: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Create Frame Tool
@@ -439,23 +467,54 @@ server.tool(
       .optional()
       .describe("Stroke color in RGBA format"),
     strokeWeight: z.number().positive().optional().describe("Stroke weight"),
-    layoutMode: z.enum(["NONE", "HORIZONTAL", "VERTICAL"]).optional().describe("Auto-layout mode for the frame"),
-    layoutWrap: z.enum(["NO_WRAP", "WRAP"]).optional().describe("Whether the auto-layout frame wraps its children"),
-    paddingTop: z.number().optional().describe("Top padding for auto-layout frame"),
-    paddingRight: z.number().optional().describe("Right padding for auto-layout frame"),
-    paddingBottom: z.number().optional().describe("Bottom padding for auto-layout frame"),
-    paddingLeft: z.number().optional().describe("Left padding for auto-layout frame"),
+    layoutMode: z
+      .enum(["NONE", "HORIZONTAL", "VERTICAL"])
+      .optional()
+      .describe("Auto-layout mode for the frame"),
+    layoutWrap: z
+      .enum(["NO_WRAP", "WRAP"])
+      .optional()
+      .describe("Whether the auto-layout frame wraps its children"),
+    paddingTop: z
+      .number()
+      .optional()
+      .describe("Top padding for auto-layout frame"),
+    paddingRight: z
+      .number()
+      .optional()
+      .describe("Right padding for auto-layout frame"),
+    paddingBottom: z
+      .number()
+      .optional()
+      .describe("Bottom padding for auto-layout frame"),
+    paddingLeft: z
+      .number()
+      .optional()
+      .describe("Left padding for auto-layout frame"),
     primaryAxisAlignItems: z
       .enum(["MIN", "MAX", "CENTER", "SPACE_BETWEEN"])
       .optional()
-      .describe("Primary axis alignment for auto-layout frame. Note: When set to SPACE_BETWEEN, itemSpacing will be ignored as children will be evenly spaced."),
-    counterAxisAlignItems: z.enum(["MIN", "MAX", "CENTER", "BASELINE"]).optional().describe("Counter axis alignment for auto-layout frame"),
-    layoutSizingHorizontal: z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Horizontal sizing mode for auto-layout frame"),
-    layoutSizingVertical: z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Vertical sizing mode for auto-layout frame"),
+      .describe(
+        "Primary axis alignment for auto-layout frame. Note: When set to SPACE_BETWEEN, itemSpacing will be ignored as children will be evenly spaced.",
+      ),
+    counterAxisAlignItems: z
+      .enum(["MIN", "MAX", "CENTER", "BASELINE"])
+      .optional()
+      .describe("Counter axis alignment for auto-layout frame"),
+    layoutSizingHorizontal: z
+      .enum(["FIXED", "HUG", "FILL"])
+      .optional()
+      .describe("Horizontal sizing mode for auto-layout frame"),
+    layoutSizingVertical: z
+      .enum(["FIXED", "HUG", "FILL"])
+      .optional()
+      .describe("Vertical sizing mode for auto-layout frame"),
     itemSpacing: z
       .number()
       .optional()
-      .describe("Distance between children in auto-layout frame. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN.")
+      .describe(
+        "Distance between children in auto-layout frame. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN.",
+      ),
   },
   async ({
     x,
@@ -477,7 +536,7 @@ server.tool(
     counterAxisAlignItems,
     layoutSizingHorizontal,
     layoutSizingVertical,
-    itemSpacing
+    itemSpacing,
   }: any) => {
     try {
       const result = await sendCommandToFigma("create_frame", {
@@ -500,7 +559,7 @@ server.tool(
         counterAxisAlignItems,
         layoutSizingHorizontal,
         layoutSizingVertical,
-        itemSpacing
+        itemSpacing,
       });
       const typedResult = result as { name: string; id: string };
       return {
@@ -516,13 +575,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error creating frame: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error creating frame: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Create Text Tool
@@ -561,7 +621,16 @@ server.tool(
       .optional()
       .describe("Optional parent node ID to append the text to"),
   },
-  async ({ x, y, text, fontSize, fontWeight, fontColor, name, parentId }: any) => {
+  async ({
+    x,
+    y,
+    text,
+    fontSize,
+    fontWeight,
+    fontColor,
+    name,
+    parentId,
+  }: any) => {
     try {
       const result = await sendCommandToFigma("create_text", {
         x,
@@ -587,13 +656,57 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error creating text: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error creating text: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
+);
+
+// Create Node From SVG Tool
+server.tool(
+  "create_node_from_svg",
+  "Create vector nodes from SVG markup (e.g. to replace raster PNG icons with editable vectors). Figma wraps the result in a FRAME containing the vector paths.",
+  {
+    svg: z
+      .string()
+      .min(1)
+      .describe(
+        "Full SVG markup, starting with an <svg> element (include viewBox/width/height for correct sizing)",
+      ),
+    name: z.string().optional().describe("Optional name for the created node"),
+    parentId: z
+      .string()
+      .optional()
+      .describe(
+        "Optional parent node ID (must support children, e.g. a frame, group or section; default: current page)",
+      ),
+    x: z
+      .number()
+      .optional()
+      .describe("Optional X position (relative to the parent)"),
+    y: z
+      .number()
+      .optional()
+      .describe("Optional Y position (relative to the parent)"),
+  },
+  async ({ svg, name, parentId, x, y }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_node_from_svg", {
+        svg,
+        name,
+        parentId,
+        x,
+        y,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating node from SVG", error);
+    }
+  },
 );
 
 // Set Fill Color Tool
@@ -618,8 +731,9 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Set fill color of node "${typedResult.name
-              }" to RGBA(${r}, ${g}, ${b}, ${a || 1})`,
+            text: `Set fill color of node "${
+              typedResult.name
+            }" to RGBA(${r}, ${g}, ${b}, ${a || 1})`,
           },
         ],
       };
@@ -628,13 +742,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting fill color: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error setting fill color: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Set Stroke Color Tool
@@ -661,8 +776,9 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Set stroke color of node "${typedResult.name
-              }" to RGBA(${r}, ${g}, ${b}, ${a || 1}) with weight ${weight || 1}`,
+            text: `Set stroke color of node "${
+              typedResult.name
+            }" to RGBA(${r}, ${g}, ${b}, ${a || 1}) with weight ${weight || 1}`,
           },
         ],
       };
@@ -671,13 +787,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting stroke color: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error setting stroke color: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Move Node Tool
@@ -706,13 +823,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error moving node: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error moving node: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Clone Node Tool
@@ -722,31 +840,31 @@ server.tool(
   {
     nodeId: z.string().describe("The ID of the node to clone"),
     x: z.number().optional().describe("New X position for the clone"),
-    y: z.number().optional().describe("New Y position for the clone")
+    y: z.number().optional().describe("New Y position for the clone"),
   },
   async ({ nodeId, x, y }: any) => {
     try {
-      const result = await sendCommandToFigma('clone_node', { nodeId, x, y });
-      const typedResult = result as { name: string, id: string };
+      const result = await sendCommandToFigma("clone_node", { nodeId, x, y });
+      const typedResult = result as { name: string; id: string };
       return {
         content: [
           {
             type: "text",
-            text: `Cloned node "${typedResult.name}" with new ID: ${typedResult.id}${x !== undefined && y !== undefined ? ` at position (${x}, ${y})` : ''}`
-          }
-        ]
+            text: `Cloned node "${typedResult.name}" with new ID: ${typedResult.id}${x !== undefined && y !== undefined ? ` at position (${x}, ${y})` : ""}`,
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error cloning node: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
+            text: `Error cloning node: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
       };
     }
-  }
+  },
 );
 
 // Resize Node Tool
@@ -779,13 +897,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error resizing node: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error resizing node: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Delete Node Tool
@@ -811,13 +930,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error deleting node: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error deleting node: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Delete Multiple Nodes Tool
@@ -829,27 +949,30 @@ server.tool(
   },
   async ({ nodeIds }: any) => {
     try {
-      const result = await sendCommandToFigma("delete_multiple_nodes", { nodeIds });
+      const result = await sendCommandToFigma("delete_multiple_nodes", {
+        nodeIds,
+      });
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
+            text: JSON.stringify(result),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error deleting multiple nodes: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error deleting multiple nodes: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Export Node as Image Tool
@@ -887,13 +1010,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error exporting node as image: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error exporting node as image: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Set Text Content Tool
@@ -924,13 +1048,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting text content: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error setting text content: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Get Styles Tool
@@ -945,22 +1070,23 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
+            text: JSON.stringify(result),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error getting styles: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error getting styles: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Get Local Components Tool
@@ -975,22 +1101,23 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
+            text: JSON.stringify(result),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error getting local components: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error getting local components: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Get Annotations Tool
@@ -999,33 +1126,37 @@ server.tool(
   "Get all annotations in the current document or specific node",
   {
     nodeId: z.string().describe("node ID to get annotations for specific node"),
-    includeCategories: z.boolean().optional().default(true).describe("Whether to include category information")
+    includeCategories: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe("Whether to include category information"),
   },
   async ({ nodeId, includeCategories }: any) => {
     try {
       const result = await sendCommandToFigma("get_annotations", {
         nodeId,
-        includeCategories
+        includeCategories,
       });
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
+            text: JSON.stringify(result),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error getting annotations: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
+            text: `Error getting annotations: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
       };
     }
-  }
+  },
 );
 
 // Set Annotation Tool
@@ -1034,41 +1165,62 @@ server.tool(
   "Create or update an annotation",
   {
     nodeId: z.string().describe("The ID of the node to annotate"),
-    annotationId: z.string().optional().describe("The ID of the annotation to update (if updating existing annotation)"),
-    labelMarkdown: z.string().describe("The annotation text in markdown format"),
-    categoryId: z.string().optional().describe("The ID of the annotation category"),
-    properties: z.array(z.object({
-      type: z.string()
-    })).optional().describe("Additional properties for the annotation")
+    annotationId: z
+      .string()
+      .optional()
+      .describe(
+        "The ID of the annotation to update (if updating existing annotation)",
+      ),
+    labelMarkdown: z
+      .string()
+      .describe("The annotation text in markdown format"),
+    categoryId: z
+      .string()
+      .optional()
+      .describe("The ID of the annotation category"),
+    properties: z
+      .array(
+        z.object({
+          type: z.string(),
+        }),
+      )
+      .optional()
+      .describe("Additional properties for the annotation"),
   },
-  async ({ nodeId, annotationId, labelMarkdown, categoryId, properties }: any) => {
+  async ({
+    nodeId,
+    annotationId,
+    labelMarkdown,
+    categoryId,
+    properties,
+  }: any) => {
     try {
       const result = await sendCommandToFigma("set_annotation", {
         nodeId,
         annotationId,
         labelMarkdown,
         categoryId,
-        properties
+        properties,
       });
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
+            text: JSON.stringify(result),
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error setting annotation: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
+            text: `Error setting annotation: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
       };
     }
-  }
+  },
 );
 
 interface SetMultipleAnnotationsParams {
@@ -1094,13 +1246,28 @@ server.tool(
       .array(
         z.object({
           nodeId: z.string().describe("The ID of the node to annotate"),
-          labelMarkdown: z.string().describe("The annotation text in markdown format"),
-          categoryId: z.string().optional().describe("The ID of the annotation category"),
-          annotationId: z.string().optional().describe("The ID of the annotation to update (if updating existing annotation)"),
-          properties: z.array(z.object({
-            type: z.string()
-          })).optional().describe("Additional properties for the annotation")
-        })
+          labelMarkdown: z
+            .string()
+            .describe("The annotation text in markdown format"),
+          categoryId: z
+            .string()
+            .optional()
+            .describe("The ID of the annotation category"),
+          annotationId: z
+            .string()
+            .optional()
+            .describe(
+              "The ID of the annotation to update (if updating existing annotation)",
+            ),
+          properties: z
+            .array(
+              z.object({
+                type: z.string(),
+              }),
+            )
+            .optional()
+            .describe("Additional properties for the annotation"),
+        }),
       )
       .describe("Array of annotations to apply"),
   },
@@ -1152,7 +1319,8 @@ server.tool(
       const typedResult = result as AnnotationResult;
 
       // Format the results for display
-      const success = typedResult.annotationsApplied && typedResult.annotationsApplied > 0;
+      const success =
+        typedResult.annotationsApplied && typedResult.annotationsApplied > 0;
       const progressText = `
       Annotation process completed:
       - ${typedResult.annotationsApplied || 0} of ${totalToProcess} successfully applied
@@ -1162,14 +1330,14 @@ server.tool(
 
       // Detailed results
       const detailedResults = typedResult.results || [];
-      const failedResults = detailedResults.filter(item => !item.success);
+      const failedResults = detailedResults.filter((item) => !item.success);
 
       // Create the detailed part of the response
       let detailedResponse = "";
       if (failedResults.length > 0) {
-        detailedResponse = `\n\nNodes that failed:\n${failedResults.map(item =>
-          `- ${item.nodeId}: ${item.error || "Unknown error"}`
-        ).join('\n')}`;
+        detailedResponse = `\n\nNodes that failed:\n${failedResults
+          .map((item) => `- ${item.nodeId}: ${item.error || "Unknown error"}`)
+          .join("\n")}`;
       }
 
       return {
@@ -1186,13 +1354,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting multiple annotations: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error setting multiple annotations: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Create Component Instance Tool
@@ -1200,11 +1369,24 @@ server.tool(
   "create_component_instance",
   "Create an instance of a component in Figma. For LOCAL components (from get_local_components), use componentId with the id field. For published LIBRARY components, use componentKey with the publishedKey field.",
   {
-    componentId: z.string().optional().describe("ID of a local component (use the id field from get_local_components result). Use this for unpublished/local components."),
-    componentKey: z.string().optional().describe("Key of a published library component to instantiate (use the publishedKey field from get_local_components result). Only works for published components."),
+    componentId: z
+      .string()
+      .optional()
+      .describe(
+        "ID of a local component (use the id field from get_local_components result). Use this for unpublished/local components.",
+      ),
+    componentKey: z
+      .string()
+      .optional()
+      .describe(
+        "Key of a published library component to instantiate (use the publishedKey field from get_local_components result). Only works for published components.",
+      ),
     x: z.number().describe("X position"),
     y: z.number().describe("Y position"),
-    parentId: z.string().optional().describe("Optional parent node ID to place the instance into"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID to place the instance into"),
   },
   async ({ componentId, componentKey, x, y, parentId }: any) => {
     try {
@@ -1221,21 +1403,22 @@ server.tool(
           {
             type: "text",
             text: JSON.stringify(typedResult),
-          }
-        ]
-      }
+          },
+        ],
+      };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error creating component instance: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error creating component instance: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Copy Instance Overrides Tool
@@ -1243,12 +1426,17 @@ server.tool(
   "get_instance_overrides",
   "Get all override properties from a selected component instance. These overrides can be applied to other instances, which will swap them to match the source component.",
   {
-    nodeId: z.string().optional().describe("Optional ID of the component instance to get overrides from. If not provided, currently selected instance will be used."),
+    nodeId: z
+      .string()
+      .optional()
+      .describe(
+        "Optional ID of the component instance to get overrides from. If not provided, currently selected instance will be used.",
+      ),
   },
   async ({ nodeId }: any) => {
     try {
       const result = await sendCommandToFigma("get_instance_overrides", {
-        instanceNodeId: nodeId || null
+        instanceNodeId: nodeId || null,
       });
       const typedResult = result as getInstanceOverridesResult;
 
@@ -1258,21 +1446,21 @@ server.tool(
             type: "text",
             text: typedResult.success
               ? `Successfully got instance overrides: ${typedResult.message}`
-              : `Failed to get instance overrides: ${typedResult.message}`
-          }
-        ]
+              : `Failed to get instance overrides: ${typedResult.message}`,
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error copying instance overrides: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
+            text: `Error copying instance overrides: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
       };
     }
-  }
+  },
 );
 
 // Set Instance Overrides Tool
@@ -1280,35 +1468,42 @@ server.tool(
   "set_instance_overrides",
   "Apply previously copied overrides to selected component instances. Target instances will be swapped to the source component and all copied override properties will be applied.",
   {
-    sourceInstanceId: z.string().describe("ID of the source component instance"),
-    targetNodeIds: z.array(z.string()).describe("Array of target instance IDs. Currently selected instances will be used.")
+    sourceInstanceId: z
+      .string()
+      .describe("ID of the source component instance"),
+    targetNodeIds: z
+      .array(z.string())
+      .describe(
+        "Array of target instance IDs. Currently selected instances will be used.",
+      ),
   },
   async ({ sourceInstanceId, targetNodeIds }: any) => {
     try {
       const result = await sendCommandToFigma("set_instance_overrides", {
         sourceInstanceId: sourceInstanceId,
-        targetNodeIds: targetNodeIds || []
+        targetNodeIds: targetNodeIds || [],
       });
       const typedResult = result as setInstanceOverridesResult;
 
       if (typedResult.success) {
-        const successCount = typedResult.results?.filter(r => r.success).length || 0;
+        const successCount =
+          typedResult.results?.filter((r) => r.success).length || 0;
         return {
           content: [
             {
               type: "text",
-              text: `Successfully applied ${typedResult.totalCount || 0} overrides to ${successCount} instances.`
-            }
-          ]
+              text: `Successfully applied ${typedResult.totalCount || 0} overrides to ${successCount} instances.`,
+            },
+          ],
         };
       } else {
         return {
           content: [
             {
               type: "text",
-              text: `Failed to set instance overrides: ${typedResult.message}`
-            }
-          ]
+              text: `Failed to set instance overrides: ${typedResult.message}`,
+            },
+          ],
         };
       }
     } catch (error) {
@@ -1316,14 +1511,13 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting instance overrides: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
+            text: `Error setting instance overrides: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
       };
     }
-  }
+  },
 );
-
 
 // Set Corner Radius Tool
 server.tool(
@@ -1337,7 +1531,7 @@ server.tool(
       .length(4)
       .optional()
       .describe(
-        "Optional array of 4 booleans to specify which corners to round [topLeft, topRight, bottomRight, bottomLeft]"
+        "Optional array of 4 booleans to specify which corners to round [topLeft, topRight, bottomRight, bottomLeft]",
       ),
   },
   async ({ nodeId, radius, corners }: any) => {
@@ -1361,13 +1555,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting corner radius: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error setting corner radius: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Define design strategy prompt
@@ -1455,7 +1650,7 @@ Example Login Screen Structure:
       ],
       description: "Best practices for working with Figma designs",
     };
-  }
+  },
 );
 
 server.prompt(
@@ -1479,7 +1674,7 @@ server.prompt(
       ],
       description: "Best practices for reading Figma designs",
     };
-  }
+  },
 );
 
 // Text Node Scanning Tool
@@ -1500,18 +1695,18 @@ server.tool(
       // Use the plugin's scan_text_nodes function with chunking flag
       const result = await sendCommandToFigma("scan_text_nodes", {
         nodeId,
-        useChunking: true,  // Enable chunking on the plugin side
-        chunkSize: 10       // Process 10 nodes at a time
+        useChunking: true, // Enable chunking on the plugin side
+        chunkSize: 10, // Process 10 nodes at a time
       });
 
       // If the result indicates chunking was used, format the response accordingly
-      if (result && typeof result === 'object' && 'chunks' in result) {
+      if (result && typeof result === "object" && "chunks" in result) {
         const typedResult = result as {
-          success: boolean,
-          totalNodes: number,
-          processedNodes: number,
-          chunks: number,
-          textNodes: Array<any>
+          success: boolean;
+          totalNodes: number;
+          processedNodes: number;
+          chunks: number;
+          textNodes: Array<any>;
         };
 
         const summaryText = `
@@ -1525,12 +1720,12 @@ server.tool(
             initialStatus,
             {
               type: "text" as const,
-              text: summaryText
+              text: summaryText,
             },
             {
               type: "text" as const,
-              text: JSON.stringify(typedResult.textNodes, null, 2)
-            }
+              text: JSON.stringify(typedResult.textNodes, null, 2),
+            },
           ],
         };
       }
@@ -1550,13 +1745,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error scanning text nodes: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error scanning text nodes: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Node Type Scanning Tool
@@ -1565,54 +1761,58 @@ server.tool(
   "Scan for child nodes with specific types in the selected Figma node",
   {
     nodeId: z.string().describe("ID of the node to scan"),
-    types: z.array(z.string()).describe("Array of node types to find in the child nodes (e.g. ['COMPONENT', 'FRAME'])")
+    types: z
+      .array(z.string())
+      .describe(
+        "Array of node types to find in the child nodes (e.g. ['COMPONENT', 'FRAME'])",
+      ),
   },
   async ({ nodeId, types }: any) => {
     try {
       // Initial response to indicate we're starting the process
       const initialStatus = {
         type: "text" as const,
-        text: `Starting node type scanning for types: ${types.join(', ')}...`,
+        text: `Starting node type scanning for types: ${types.join(", ")}...`,
       };
 
       // Use the plugin's scan_nodes_by_types function
       const result = await sendCommandToFigma("scan_nodes_by_types", {
         nodeId,
-        types
+        types,
       });
 
       // Format the response
-      if (result && typeof result === 'object' && 'matchingNodes' in result) {
+      if (result && typeof result === "object" && "matchingNodes" in result) {
         const typedResult = result as {
-          success: boolean,
-          count: number,
+          success: boolean;
+          count: number;
           matchingNodes: Array<{
-            id: string,
-            name: string,
-            type: string,
+            id: string;
+            name: string;
+            type: string;
             bbox: {
-              x: number,
-              y: number,
-              width: number,
-              height: number
-            }
-          }>,
-          searchedTypes: Array<string>
+              x: number;
+              y: number;
+              width: number;
+              height: number;
+            };
+          }>;
+          searchedTypes: Array<string>;
         };
 
-        const summaryText = `Scan completed: Found ${typedResult.count} nodes matching types: ${typedResult.searchedTypes.join(', ')}`;
+        const summaryText = `Scan completed: Found ${typedResult.count} nodes matching types: ${typedResult.searchedTypes.join(", ")}`;
 
         return {
           content: [
             initialStatus,
             {
               type: "text" as const,
-              text: summaryText
+              text: summaryText,
             },
             {
               type: "text" as const,
-              text: JSON.stringify(typedResult.matchingNodes, null, 2)
-            }
+              text: JSON.stringify(typedResult.matchingNodes, null, 2),
+            },
           ],
         };
       }
@@ -1632,13 +1832,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error scanning nodes by types: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error scanning nodes by types: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Text Replacement Strategy Prompt
@@ -1772,7 +1973,7 @@ Remember that text is never just text—it's a core design element that must wor
       ],
       description: "Systematic approach for replacing text in Figma designs",
     };
-  }
+  },
 );
 
 // Set Multiple Text Contents Tool
@@ -1788,7 +1989,7 @@ server.tool(
         z.object({
           nodeId: z.string().describe("The ID of the text node"),
           text: z.string().describe("The replacement text"),
-        })
+        }),
       )
       .describe("Array of text node IDs and their replacement texts"),
   },
@@ -1841,7 +2042,8 @@ server.tool(
       const typedResult = result as TextReplaceResult;
 
       // Format the results for display
-      const success = typedResult.replacementsApplied && typedResult.replacementsApplied > 0;
+      const success =
+        typedResult.replacementsApplied && typedResult.replacementsApplied > 0;
       const progressText = `
       Text replacement completed:
       - ${typedResult.replacementsApplied || 0} of ${totalToProcess} successfully updated
@@ -1851,14 +2053,14 @@ server.tool(
 
       // Detailed results
       const detailedResults = typedResult.results || [];
-      const failedResults = detailedResults.filter(item => !item.success);
+      const failedResults = detailedResults.filter((item) => !item.success);
 
       // Create the detailed part of the response
       let detailedResponse = "";
       if (failedResults.length > 0) {
-        detailedResponse = `\n\nNodes that failed:\n${failedResults.map(item =>
-          `- ${item.nodeId}: ${item.error || "Unknown error"}`
-        ).join('\n')}`;
+        detailedResponse = `\n\nNodes that failed:\n${failedResults
+          .map((item) => `- ${item.nodeId}: ${item.error || "Unknown error"}`)
+          .join("\n")}`;
       }
 
       return {
@@ -1875,13 +2077,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting multiple text contents: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error setting multiple text contents: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Annotation Conversion Strategy Prompt
@@ -2032,13 +2235,14 @@ if (annotationsToApply.length > 0) {
 \`\`\`
 
 
-This strategy focuses on practical implementation based on real-world usage patterns, emphasizing the importance of handling various UI elements as annotation targets, not just text nodes.`
+This strategy focuses on practical implementation based on real-world usage patterns, emphasizing the importance of handling various UI elements as annotation targets, not just text nodes.`,
           },
         },
       ],
-      description: "Strategy for converting manual annotations to Figma's native annotations",
+      description:
+        "Strategy for converting manual annotations to Figma's native annotations",
     };
-  }
+  },
 );
 
 // Instance Slot Filling Strategy Prompt
@@ -2092,9 +2296,10 @@ This strategy enables transferring content and property overrides from a source 
           },
         },
       ],
-      description: "Strategy for transferring overrides between component instances in Figma",
+      description:
+        "Strategy for transferring overrides between component instances in Figma",
     };
-  }
+  },
 );
 
 // Set Layout Mode Tool
@@ -2103,22 +2308,27 @@ server.tool(
   "Set the layout mode and wrap behavior of a frame in Figma",
   {
     nodeId: z.string().describe("The ID of the frame to modify"),
-    layoutMode: z.enum(["NONE", "HORIZONTAL", "VERTICAL"]).describe("Layout mode for the frame"),
-    layoutWrap: z.enum(["NO_WRAP", "WRAP"]).optional().describe("Whether the auto-layout frame wraps its children")
+    layoutMode: z
+      .enum(["NONE", "HORIZONTAL", "VERTICAL"])
+      .describe("Layout mode for the frame"),
+    layoutWrap: z
+      .enum(["NO_WRAP", "WRAP"])
+      .optional()
+      .describe("Whether the auto-layout frame wraps its children"),
   },
   async ({ nodeId, layoutMode, layoutWrap }: any) => {
     try {
       const result = await sendCommandToFigma("set_layout_mode", {
         nodeId,
         layoutMode,
-        layoutWrap: layoutWrap || "NO_WRAP"
+        layoutWrap: layoutWrap || "NO_WRAP",
       });
       const typedResult = result as { name: string };
       return {
         content: [
           {
             type: "text",
-            text: `Set layout mode of frame "${typedResult.name}" to ${layoutMode}${layoutWrap ? ` with ${layoutWrap}` : ''}`,
+            text: `Set layout mode of frame "${typedResult.name}" to ${layoutMode}${layoutWrap ? ` with ${layoutWrap}` : ""}`,
           },
         ],
       };
@@ -2132,7 +2342,7 @@ server.tool(
         ],
       };
     }
-  }
+  },
 );
 
 // Set Padding Tool
@@ -2146,7 +2356,13 @@ server.tool(
     paddingBottom: z.number().optional().describe("Bottom padding value"),
     paddingLeft: z.number().optional().describe("Left padding value"),
   },
-  async ({ nodeId, paddingTop, paddingRight, paddingBottom, paddingLeft }: any) => {
+  async ({
+    nodeId,
+    paddingTop,
+    paddingRight,
+    paddingBottom,
+    paddingLeft,
+  }: any) => {
     try {
       const result = await sendCommandToFigma("set_padding", {
         nodeId,
@@ -2160,13 +2376,17 @@ server.tool(
       // Create a message about which padding values were set
       const paddingMessages = [];
       if (paddingTop !== undefined) paddingMessages.push(`top: ${paddingTop}`);
-      if (paddingRight !== undefined) paddingMessages.push(`right: ${paddingRight}`);
-      if (paddingBottom !== undefined) paddingMessages.push(`bottom: ${paddingBottom}`);
-      if (paddingLeft !== undefined) paddingMessages.push(`left: ${paddingLeft}`);
+      if (paddingRight !== undefined)
+        paddingMessages.push(`right: ${paddingRight}`);
+      if (paddingBottom !== undefined)
+        paddingMessages.push(`bottom: ${paddingBottom}`);
+      if (paddingLeft !== undefined)
+        paddingMessages.push(`left: ${paddingLeft}`);
 
-      const paddingText = paddingMessages.length > 0
-        ? `padding (${paddingMessages.join(', ')})`
-        : "padding";
+      const paddingText =
+        paddingMessages.length > 0
+          ? `padding (${paddingMessages.join(", ")})`
+          : "padding";
 
       return {
         content: [
@@ -2186,7 +2406,7 @@ server.tool(
         ],
       };
     }
-  }
+  },
 );
 
 // Set Axis Align Tool
@@ -2198,29 +2418,36 @@ server.tool(
     primaryAxisAlignItems: z
       .enum(["MIN", "MAX", "CENTER", "SPACE_BETWEEN"])
       .optional()
-      .describe("Primary axis alignment (MIN/MAX = left/right in horizontal, top/bottom in vertical). Note: When set to SPACE_BETWEEN, itemSpacing will be ignored as children will be evenly spaced."),
+      .describe(
+        "Primary axis alignment (MIN/MAX = left/right in horizontal, top/bottom in vertical). Note: When set to SPACE_BETWEEN, itemSpacing will be ignored as children will be evenly spaced.",
+      ),
     counterAxisAlignItems: z
       .enum(["MIN", "MAX", "CENTER", "BASELINE"])
       .optional()
-      .describe("Counter axis alignment (MIN/MAX = top/bottom in horizontal, left/right in vertical)")
+      .describe(
+        "Counter axis alignment (MIN/MAX = top/bottom in horizontal, left/right in vertical)",
+      ),
   },
   async ({ nodeId, primaryAxisAlignItems, counterAxisAlignItems }: any) => {
     try {
       const result = await sendCommandToFigma("set_axis_align", {
         nodeId,
         primaryAxisAlignItems,
-        counterAxisAlignItems
+        counterAxisAlignItems,
       });
       const typedResult = result as { name: string };
 
       // Create a message about which alignments were set
       const alignMessages = [];
-      if (primaryAxisAlignItems !== undefined) alignMessages.push(`primary: ${primaryAxisAlignItems}`);
-      if (counterAxisAlignItems !== undefined) alignMessages.push(`counter: ${counterAxisAlignItems}`);
+      if (primaryAxisAlignItems !== undefined)
+        alignMessages.push(`primary: ${primaryAxisAlignItems}`);
+      if (counterAxisAlignItems !== undefined)
+        alignMessages.push(`counter: ${counterAxisAlignItems}`);
 
-      const alignText = alignMessages.length > 0
-        ? `axis alignment (${alignMessages.join(', ')})`
-        : "axis alignment";
+      const alignText =
+        alignMessages.length > 0
+          ? `axis alignment (${alignMessages.join(", ")})`
+          : "axis alignment";
 
       return {
         content: [
@@ -2240,41 +2467,52 @@ server.tool(
         ],
       };
     }
-  }
+  },
 );
 
 // Set Layout Sizing Tool
 server.tool(
   "set_layout_sizing",
-  "Set horizontal and vertical sizing modes for an auto-layout frame in Figma",
+  "Set horizontal and vertical sizing modes for a frame, component, component set, instance or text node in Figma",
   {
-    nodeId: z.string().describe("The ID of the frame to modify"),
+    nodeId: z
+      .string()
+      .describe(
+        "The ID of the frame, component, component set, instance or text node to modify",
+      ),
     layoutSizingHorizontal: z
       .enum(["FIXED", "HUG", "FILL"])
       .optional()
-      .describe("Horizontal sizing mode (HUG for frames/text only, FILL for auto-layout children only)"),
+      .describe(
+        "Horizontal sizing mode (HUG for auto-layout frames/components/instances and text, FILL for auto-layout children only)",
+      ),
     layoutSizingVertical: z
       .enum(["FIXED", "HUG", "FILL"])
       .optional()
-      .describe("Vertical sizing mode (HUG for frames/text only, FILL for auto-layout children only)")
+      .describe(
+        "Vertical sizing mode (HUG for auto-layout frames/components/instances and text, FILL for auto-layout children only)",
+      ),
   },
   async ({ nodeId, layoutSizingHorizontal, layoutSizingVertical }: any) => {
     try {
       const result = await sendCommandToFigma("set_layout_sizing", {
         nodeId,
         layoutSizingHorizontal,
-        layoutSizingVertical
+        layoutSizingVertical,
       });
       const typedResult = result as { name: string };
 
       // Create a message about which sizing modes were set
       const sizingMessages = [];
-      if (layoutSizingHorizontal !== undefined) sizingMessages.push(`horizontal: ${layoutSizingHorizontal}`);
-      if (layoutSizingVertical !== undefined) sizingMessages.push(`vertical: ${layoutSizingVertical}`);
+      if (layoutSizingHorizontal !== undefined)
+        sizingMessages.push(`horizontal: ${layoutSizingHorizontal}`);
+      if (layoutSizingVertical !== undefined)
+        sizingMessages.push(`vertical: ${layoutSizingVertical}`);
 
-      const sizingText = sizingMessages.length > 0
-        ? `layout sizing (${sizingMessages.join(', ')})`
-        : "layout sizing";
+      const sizingText =
+        sizingMessages.length > 0
+          ? `layout sizing (${sizingMessages.join(", ")})`
+          : "layout sizing";
 
       return {
         content: [
@@ -2294,7 +2532,7 @@ server.tool(
         ],
       };
     }
-  }
+  },
 );
 
 // Set Item Spacing Tool
@@ -2303,21 +2541,37 @@ server.tool(
   "Set distance between children in an auto-layout frame",
   {
     nodeId: z.string().describe("The ID of the frame to modify"),
-    itemSpacing: z.number().optional().describe("Distance between children. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN."),
-    counterAxisSpacing: z.number().optional().describe("Distance between wrapped rows/columns. Only works when layoutWrap is set to WRAP.")
+    itemSpacing: z
+      .number()
+      .optional()
+      .describe(
+        "Distance between children. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN.",
+      ),
+    counterAxisSpacing: z
+      .number()
+      .optional()
+      .describe(
+        "Distance between wrapped rows/columns. Only works when layoutWrap is set to WRAP.",
+      ),
   },
-  async ({ nodeId, itemSpacing, counterAxisSpacing}: any) => {
+  async ({ nodeId, itemSpacing, counterAxisSpacing }: any) => {
     try {
       const params: any = { nodeId };
       if (itemSpacing !== undefined) params.itemSpacing = itemSpacing;
-      if (counterAxisSpacing !== undefined) params.counterAxisSpacing = counterAxisSpacing;
-      
+      if (counterAxisSpacing !== undefined)
+        params.counterAxisSpacing = counterAxisSpacing;
+
       const result = await sendCommandToFigma("set_item_spacing", params);
-      const typedResult = result as { name: string, itemSpacing?: number, counterAxisSpacing?: number };
+      const typedResult = result as {
+        name: string;
+        itemSpacing?: number;
+        counterAxisSpacing?: number;
+      };
 
       let message = `Updated spacing for frame "${typedResult.name}":`;
       if (itemSpacing !== undefined) message += ` itemSpacing=${itemSpacing}`;
-      if (counterAxisSpacing !== undefined) message += ` counterAxisSpacing=${counterAxisSpacing}`;
+      if (counterAxisSpacing !== undefined)
+        message += ` counterAxisSpacing=${counterAxisSpacing}`;
 
       return {
         content: [
@@ -2337,7 +2591,7 @@ server.tool(
         ],
       };
     }
-  }
+  },
 );
 
 // A tool to get Figma Prototyping Reactions from multiple nodes
@@ -2345,7 +2599,9 @@ server.tool(
   "get_reactions",
   "Get Figma Prototyping Reactions from multiple nodes. CRITICAL: The output MUST be processed using the 'reaction_to_connector_strategy' prompt IMMEDIATELY to generate parameters for connector lines via the 'create_connections' tool.",
   {
-    nodeIds: z.array(z.string()).describe("Array of node IDs to get reactions from"),
+    nodeIds: z
+      .array(z.string())
+      .describe("Array of node IDs to get reactions from"),
   },
   async ({ nodeIds }: any) => {
     try {
@@ -2354,12 +2610,12 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(result)
+            text: JSON.stringify(result),
           },
           {
             type: "text",
-            text: "IMPORTANT: You MUST now use the reaction data above and follow the `reaction_to_connector_strategy` prompt to prepare the parameters for the `create_connections` tool call. This is a required next step."
-          }
+            text: "IMPORTANT: You MUST now use the reaction data above and follow the `reaction_to_connector_strategy` prompt to prepare the parameters for the `create_connections` tool call. This is a required next step.",
+          },
         ],
         followUp: {
           type: "prompt",
@@ -2371,13 +2627,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error getting reactions: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error getting reactions: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Create Connectors Tool
@@ -2385,33 +2642,36 @@ server.tool(
   "set_default_connector",
   "Set a copied connector node as the default connector",
   {
-    connectorId: z.string().optional().describe("The ID of the connector node to set as default")
+    connectorId: z
+      .string()
+      .optional()
+      .describe("The ID of the connector node to set as default"),
   },
   async ({ connectorId }: any) => {
     try {
       const result = await sendCommandToFigma("set_default_connector", {
-        connectorId
+        connectorId,
       });
 
       return {
         content: [
           {
             type: "text",
-            text: `Default connector set: ${JSON.stringify(result)}`
-          }
-        ]
+            text: `Default connector set: ${JSON.stringify(result)}`,
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error setting default connector: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
+            text: `Error setting default connector: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
       };
     }
-  }
+  },
 );
 
 // Connect Nodes Tool
@@ -2419,11 +2679,18 @@ server.tool(
   "create_connections",
   "Create connections between nodes using the default connector style",
   {
-    connections: z.array(z.object({
-      startNodeId: z.string().describe("ID of the starting node"),
-      endNodeId: z.string().describe("ID of the ending node"),
-      text: z.string().optional().describe("Optional text to display on the connector")
-    })).describe("Array of node connections to create")
+    connections: z
+      .array(
+        z.object({
+          startNodeId: z.string().describe("ID of the starting node"),
+          endNodeId: z.string().describe("ID of the ending node"),
+          text: z
+            .string()
+            .optional()
+            .describe("Optional text to display on the connector"),
+        }),
+      )
+      .describe("Array of node connections to create"),
   },
   async ({ connections }: any) => {
     try {
@@ -2432,35 +2699,35 @@ server.tool(
           content: [
             {
               type: "text",
-              text: "No connections provided"
-            }
-          ]
+              text: "No connections provided",
+            },
+          ],
         };
       }
 
       const result = await sendCommandToFigma("create_connections", {
-        connections
+        connections,
       });
 
       return {
         content: [
           {
             type: "text",
-            text: `Created ${connections.length} connections: ${JSON.stringify(result)}`
-          }
-        ]
+            text: `Created ${connections.length} connections: ${JSON.stringify(result)}`,
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: "text",
-            text: `Error creating connections: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
+            text: `Error creating connections: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
       };
     }
-  }
+  },
 );
 
 // Set Focus Tool
@@ -2492,7 +2759,7 @@ server.tool(
         ],
       };
     }
-  }
+  },
 );
 
 // Set Selections Tool
@@ -2505,12 +2772,15 @@ server.tool(
   async ({ nodeIds }: any) => {
     try {
       const result = await sendCommandToFigma("set_selections", { nodeIds });
-      const typedResult = result as { selectedNodes: Array<{ name: string; id: string }>; count: number };
+      const typedResult = result as {
+        selectedNodes: Array<{ name: string; id: string }>;
+        count: number;
+      };
       return {
         content: [
           {
             type: "text",
-            text: `Selected ${typedResult.count} nodes: ${typedResult.selectedNodes.map(node => `"${node.name}" (${node.id})`).join(', ')}`,
+            text: `Selected ${typedResult.count} nodes: ${typedResult.selectedNodes.map((node) => `"${node.name}" (${node.id})`).join(", ")}`,
           },
         ],
       };
@@ -2524,7 +2794,7 @@ server.tool(
         ],
       };
     }
-  }
+  },
 );
 
 // Strategy for converting Figma prototype reactions to connector lines
@@ -2602,15 +2872,15 @@ You will receive JSON data from the \`get_reactions\` tool. This data contains a
    - **Action:** Call the \`create_connections\` tool, passing the array generated in Step 4 as the \`connections\` argument.
    - **Verify:** Check the response from \`create_connections\` to confirm success or failure.
 
-This detailed process ensures you correctly interpret the reaction data, prepare the necessary information, and use the appropriate tools to create the connector lines.`
+This detailed process ensures you correctly interpret the reaction data, prepare the necessary information, and use the appropriate tools to create the connector lines.`,
           },
         },
       ],
-      description: "Strategy for converting Figma prototype reactions to connector lines using the output of 'get_reactions'",
+      description:
+        "Strategy for converting Figma prototype reactions to connector lines using the output of 'get_reactions'",
     };
-  }
+  },
 );
-
 
 // Define command types and parameters
 type FigmaCommand =
@@ -2622,6 +2892,7 @@ type FigmaCommand =
   | "create_rectangle"
   | "create_frame"
   | "create_text"
+  | "create_node_from_svg"
   | "set_fill_color"
   | "set_stroke_color"
   | "move_node"
@@ -2666,7 +2937,31 @@ type FigmaCommand =
   | "create_variable_collection"
   | "create_variable"
   | "set_variable_value"
-  | "bind_variable";
+  | "delete_variable"
+  | "delete_variable_collection"
+  | "bind_variable"
+  | "add_interaction"
+  | "set_reactions"
+  | "remove_interactions"
+  | "get_flow_starting_points"
+  | "set_flow_starting_point"
+  | "remove_flow_starting_point"
+  | "set_overlay_settings"
+  | "set_scroll_behavior"
+  | "set_frame_properties"
+  | "create_text_style"
+  | "update_text_style"
+  | "apply_text_style"
+  | "set_text_decoration"
+  | "set_visible"
+  | "get_main_component"
+  | "delete_style"
+  | "set_effects"
+  | "create_effect_style"
+  | "update_effect_style"
+  | "apply_effect_style"
+  | "get_design_context"
+  | "export_node_assets";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -2691,6 +2986,13 @@ type CommandParams = {
     fillColor?: { r: number; g: number; b: number; a?: number };
     strokeColor?: { r: number; g: number; b: number; a?: number };
     strokeWeight?: number;
+  };
+  create_node_from_svg: {
+    svg: string;
+    name?: string;
+    parentId?: string;
+    x?: number;
+    y?: number;
   };
   create_text: {
     x: number;
@@ -2839,7 +3141,11 @@ type CommandParams = {
     index?: number;
   };
   create_component_from_node: { nodeId: string; name?: string };
-  combine_as_variants: { componentIds: string[]; name?: string; parentId?: string };
+  combine_as_variants: {
+    componentIds: string[];
+    name?: string;
+    parentId?: string;
+  };
   add_component_property: {
     componentId: string;
     name: string;
@@ -2859,10 +3165,104 @@ type CommandParams = {
     scopes?: string[];
   };
   set_variable_value: { variableId: string; value: unknown; modeId?: string };
+  delete_variable: { variableId: string };
+  delete_variable_collection: { collectionId: string };
   bind_variable: { nodeId: string; field: string; variableId: string | null };
-
+  add_interaction: {
+    nodeId: string;
+    trigger?: string;
+    timeout?: number;
+    action?: string;
+    destinationId?: string;
+    url?: string;
+    openInNewTab?: boolean;
+    transition?: {
+      type: string;
+      direction?: string;
+      duration?: number;
+      easing?: string;
+    };
+    preserveScrollPosition?: boolean;
+    replace?: boolean;
+  };
+  set_reactions: { nodeId: string; reactions: Record<string, unknown>[] };
+  remove_interactions: { nodeId: string; triggerType?: string };
+  get_flow_starting_points: Record<string, never>;
+  set_flow_starting_point: { nodeId: string; name: string };
+  remove_flow_starting_point: { nodeId: string };
+  set_overlay_settings: {
+    nodeId: string;
+    position?: string;
+    background?:
+      "NONE" | { color: { r: number; g: number; b: number; a?: number } };
+    closeOnClickOutside?: boolean;
+  };
+  set_scroll_behavior: {
+    nodeId: string;
+    overflowDirection?: string;
+    scrollBehavior?: string;
+  };
+  set_frame_properties: {
+    nodeId: string;
+    layoutPositioning?: "AUTO" | "ABSOLUTE";
+    itemReverseZIndex?: boolean;
+    clipsContent?: boolean;
+    x?: number;
+    y?: number;
+  };
+  create_text_style: TextStyleProps & { name: string };
+  update_text_style: TextStyleProps & { styleId: string };
+  apply_text_style: { styleId: string; nodeId?: string; nodeIds?: string[] };
+  set_text_decoration: {
+    decoration: "NONE" | "UNDERLINE" | "STRIKETHROUGH";
+    nodeId?: string;
+    nodeIds?: string[];
+    start?: number;
+    end?: number;
+  };
+  set_visible: { visible: boolean; nodeId?: string; nodeIds?: string[] };
+  get_main_component: { nodeId?: string; nodeIds?: string[] };
+  delete_style: { styleId: string };
+  set_effects: { nodeId: string; effects: EffectInput[] };
+  create_effect_style: {
+    name: string;
+    effects: EffectInput[];
+    description?: string;
+  };
+  update_effect_style: {
+    styleId: string;
+    name?: string;
+    effects?: EffectInput[];
+    description?: string;
+  };
+  apply_effect_style: { styleId: string; nodeId?: string; nodeIds?: string[] };
 };
 
+type TextStyleProps = {
+  name?: string;
+  description?: string;
+  fontFamily?: string;
+  fontStyle?: string;
+  fontWeight?: number;
+  fontSize?: number;
+  lineHeight?:
+    number | "AUTO" | { unit: "PIXELS" | "PERCENT" | "AUTO"; value?: number };
+  letterSpacing?: number | { unit: "PIXELS" | "PERCENT"; value: number };
+  textCase?: string;
+  textDecoration?: string;
+  paragraphSpacing?: number;
+};
+
+type EffectInput = {
+  type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
+  color?: { r: number; g: number; b: number; a?: number };
+  offset?: { x: number; y: number };
+  radius?: number;
+  spread?: number;
+  visible?: boolean;
+  blendMode?: string;
+  showShadowBehindNode?: boolean;
+};
 
 // Helper function to process Figma node responses
 function processFigmaNodeResponse(result: unknown): any {
@@ -2875,8 +3275,9 @@ function processFigmaNodeResponse(result: unknown): any {
   if ("id" in resultObj && typeof resultObj.id === "string") {
     // It appears to be a node response, log the details
     console.info(
-      `Processed Figma node: ${resultObj.name || "Unknown"} (ID: ${resultObj.id
-      })`
+      `Processed Figma node: ${resultObj.name || "Unknown"} (ID: ${
+        resultObj.id
+      })`,
     );
 
     if ("x" in resultObj && "y" in resultObj) {
@@ -2895,16 +3296,16 @@ function processFigmaNodeResponse(result: unknown): any {
 function connectToFigma(port: number = 3055) {
   // If already connected, do nothing
   if (ws && ws.readyState === WebSocket.OPEN) {
-    logger.info('Already connected to Figma');
+    logger.info("Already connected to Figma");
     return;
   }
 
-  const wsUrl = serverUrl === 'localhost' ? `${WS_URL}:${port}` : WS_URL;
+  const wsUrl = serverUrl === "localhost" ? `${WS_URL}:${port}` : WS_URL;
   logger.info(`Connecting to Figma socket server at ${wsUrl}...`);
   ws = new WebSocket(wsUrl);
 
-  ws.on('open', () => {
-    logger.info('Connected to Figma socket server');
+  ws.on("open", () => {
+    logger.info("Connected to Figma socket server");
     // Reset channel on new connection
     currentChannel = null;
   });
@@ -2922,9 +3323,9 @@ function connectToFigma(port: number = 3055) {
       const json = JSON.parse(data) as ProgressMessage;
 
       // Handle progress updates
-      if (json.type === 'progress_update') {
+      if (json.type === "progress_update") {
         const progressData = json.message.data as CommandProgressUpdate;
-        const requestId = json.id || '';
+        const requestId = json.id || "";
 
         if (requestId && pendingRequests.has(requestId)) {
           const request = pendingRequests.get(requestId)!;
@@ -2938,23 +3339,32 @@ function connectToFigma(port: number = 3055) {
           // Create a new timeout
           request.timeout = setTimeout(() => {
             if (pendingRequests.has(requestId)) {
-              logger.error(`Request ${requestId} timed out after extended period of inactivity`);
+              logger.error(
+                `Request ${requestId} timed out after extended period of inactivity`,
+              );
               pendingRequests.delete(requestId);
-              request.reject(new Error('Request to Figma timed out'));
+              request.reject(new Error("Request to Figma timed out"));
             }
           }, 60000); // 60 second timeout for inactivity
 
           // Log progress
-          logger.info(`Progress update for ${progressData.commandType}: ${progressData.progress}% - ${progressData.message}`);
+          logger.info(
+            `Progress update for ${progressData.commandType}: ${progressData.progress}% - ${progressData.message}`,
+          );
 
           // For completed updates, we could resolve the request early if desired
-          if (progressData.status === 'completed' && progressData.progress === 100) {
+          if (
+            progressData.status === "completed" &&
+            progressData.progress === 100
+          ) {
             // Optionally resolve early with partial data
             // request.resolve(progressData.payload);
             // pendingRequests.delete(requestId);
 
             // Instead, just log the completion, wait for final result from Figma
-            logger.info(`Operation ${progressData.commandType} completed, waiting for final result`);
+            logger.info(
+              `Operation ${progressData.commandType} completed, waiting for final result`,
+            );
           }
         }
         return;
@@ -2963,7 +3373,7 @@ function connectToFigma(port: number = 3055) {
       // Handle regular responses
       const myResponse = json.message;
       logger.debug(`Received message: ${JSON.stringify(myResponse)}`);
-      logger.log('myResponse' + JSON.stringify(myResponse));
+      logger.log("myResponse" + JSON.stringify(myResponse));
 
       // Handle response to a request
       if (
@@ -2986,19 +3396,23 @@ function connectToFigma(port: number = 3055) {
         pendingRequests.delete(myResponse.id);
       } else {
         // Handle broadcast messages or events
-        logger.info(`Received broadcast message: ${JSON.stringify(myResponse)}`);
+        logger.info(
+          `Received broadcast message: ${JSON.stringify(myResponse)}`,
+        );
       }
     } catch (error) {
-      logger.error(`Error parsing message: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(
+        `Error parsing message: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   });
 
-  ws.on('error', (error) => {
+  ws.on("error", (error) => {
     logger.error(`Socket error: ${error}`);
   });
 
-  ws.on('close', () => {
-    logger.info('Disconnected from Figma socket server');
+  ws.on("close", () => {
+    logger.info("Disconnected from Figma socket server");
     ws = null;
 
     // Reject all pending requests
@@ -3009,7 +3423,7 @@ function connectToFigma(port: number = 3055) {
     }
 
     // Attempt to reconnect
-    logger.info('Attempting to reconnect in 2 seconds...');
+    logger.info("Attempting to reconnect in 2 seconds...");
     setTimeout(() => connectToFigma(port), 2000);
   });
 }
@@ -3025,7 +3439,9 @@ async function joinChannel(channelName: string): Promise<void> {
     currentChannel = channelName;
     logger.info(`Joined channel: ${channelName}`);
   } catch (error) {
-    logger.error(`Failed to join channel: ${error instanceof Error ? error.message : String(error)}`);
+    logger.error(
+      `Failed to join channel: ${error instanceof Error ? error.message : String(error)}`,
+    );
     throw error;
   }
 }
@@ -3034,7 +3450,7 @@ async function joinChannel(channelName: string): Promise<void> {
 function sendCommandToFigma(
   command: FigmaCommand,
   params: unknown = {},
-  timeoutMs: number = 30000
+  timeoutMs: number = 30000,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     // If not connected, try to connect first
@@ -3072,8 +3488,10 @@ function sendCommandToFigma(
     const timeout = setTimeout(() => {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
-        logger.error(`Request ${id} to Figma timed out after ${timeoutMs / 1000} seconds`);
-        reject(new Error('Request to Figma timed out'));
+        logger.error(
+          `Request ${id} to Figma timed out after ${timeoutMs / 1000} seconds`,
+        );
+        reject(new Error("Request to Figma timed out"));
       }
     }, timeoutMs);
 
@@ -3082,7 +3500,7 @@ function sendCommandToFigma(
       resolve,
       reject,
       timeout,
-      lastActivity: Date.now()
+      lastActivity: Date.now(),
     });
 
     // Send the request
@@ -3102,19 +3520,19 @@ server.tool(
       .string()
       .optional()
       .describe(
-        "Absolute path to a local image file, read by the MCP server (preferred: keeps image bytes out of the model context)"
+        "Absolute path to a local image file, read by the MCP server (preferred: keeps image bytes out of the model context)",
       ),
     imageUrl: z
       .string()
       .optional()
       .describe(
-        "Image URL, fetched by the MCP server (the Figma plugin cannot fetch arbitrary domains itself)"
+        "Image URL, fetched by the MCP server (the Figma plugin cannot fetch arbitrary domains itself)",
       ),
     imageBase64: z
       .string()
       .optional()
       .describe(
-        "Base64-encoded image data, with or without a data: URI prefix (only when the image exists nowhere else)"
+        "Base64-encoded image data, with or without a data: URI prefix (only when the image exists nowhere else)",
       ),
     scaleMode: z
       .enum(["FILL", "FIT", "CROP", "TILE"])
@@ -3124,10 +3542,12 @@ server.tool(
   async ({ nodeId, imagePath, imageUrl, imageBase64, scaleMode }: any) => {
     try {
       const sources = [imagePath, imageUrl, imageBase64].filter(
-        (source) => source !== undefined && source !== ""
+        (source) => source !== undefined && source !== "",
       );
       if (sources.length !== 1) {
-        throw new Error("Provide exactly one of imagePath, imageUrl or imageBase64");
+        throw new Error(
+          "Provide exactly one of imagePath, imageUrl or imageBase64",
+        );
       }
 
       let base64Data: string;
@@ -3136,9 +3556,13 @@ server.tool(
       } else if (imageUrl) {
         const response = await fetch(imageUrl);
         if (!response.ok) {
-          throw new Error(`Failed to fetch image URL (HTTP ${response.status})`);
+          throw new Error(
+            `Failed to fetch image URL (HTTP ${response.status})`,
+          );
         }
-        base64Data = Buffer.from(await response.arrayBuffer()).toString("base64");
+        base64Data = Buffer.from(await response.arrayBuffer()).toString(
+          "base64",
+        );
       } else {
         base64Data = imageBase64.replace(/^data:[^;,]+;base64,/, "");
       }
@@ -3146,7 +3570,7 @@ server.tool(
       // Keep well under the websocket relay's default 16MB frame limit
       if (base64Data.length > 12 * 1024 * 1024) {
         throw new Error(
-          "Image is too large to send over the relay (~9MB binary max); downscale it first"
+          "Image is too large to send over the relay (~9MB binary max); downscale it first",
         );
       }
 
@@ -3168,8 +3592,9 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Set image fill of node "${typedResult.name}"${sizeInfo} with scale mode ${scaleMode || "FILL"
-              }, imageHash: ${typedResult.imageHash}`,
+            text: `Set image fill of node "${typedResult.name}"${sizeInfo} with scale mode ${
+              scaleMode || "FILL"
+            }, imageHash: ${typedResult.imageHash}`,
           },
         ],
       };
@@ -3178,13 +3603,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting image fill: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error setting image fill: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Rename Node Tool
@@ -3212,13 +3638,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error renaming node: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Create Section Tool
@@ -3255,13 +3682,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error creating section: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error creating section: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Set Parent Tool
@@ -3272,13 +3700,23 @@ server.tool(
     nodeId: z.string().describe("The ID of the node to move"),
     parentId: z
       .string()
-      .describe("The ID of the new parent node (must support children, e.g. a section, frame or group)"),
-    x: z.number().optional().describe("Optional X position relative to the new parent"),
-    y: z.number().optional().describe("Optional Y position relative to the new parent"),
+      .describe(
+        "The ID of the new parent node (must support children, e.g. a section, frame or group)",
+      ),
+    x: z
+      .number()
+      .optional()
+      .describe("Optional X position relative to the new parent"),
+    y: z
+      .number()
+      .optional()
+      .describe("Optional Y position relative to the new parent"),
     index: z
       .number()
       .optional()
-      .describe("Optional child index to insert at (default: appended as last child)"),
+      .describe(
+        "Optional child index to insert at (default: appended as last child)",
+      ),
   },
   async ({ nodeId, parentId, x, y, index }: any) => {
     try {
@@ -3308,13 +3746,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error setting parent: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error setting parent: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Shared result helpers for component & variable tools
@@ -3344,7 +3783,12 @@ const rgbaSchema = z.object({
   r: z.number().min(0).max(1).describe("Red component (0-1)"),
   g: z.number().min(0).max(1).describe("Green component (0-1)"),
   b: z.number().min(0).max(1).describe("Blue component (0-1)"),
-  a: z.number().min(0).max(1).optional().describe("Alpha component (0-1, default 1)"),
+  a: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe("Alpha component (0-1, default 1)"),
 });
 
 const variableValueSchema = z.union([
@@ -3362,23 +3806,28 @@ server.tool(
   "create_component_from_node",
   "Convert an existing node (e.g. a frame) into a Figma main Component. The node is replaced in place by the new component.",
   {
-    nodeId: z.string().describe("The ID of the node to convert into a component"),
+    nodeId: z
+      .string()
+      .describe("The ID of the node to convert into a component"),
     name: z.string().optional().describe("Optional name for the new component"),
   },
   async ({ nodeId, name }: any) => {
     try {
-      const result = await sendCommandToFigma("create_component_from_node", { nodeId, name });
+      const result = await sendCommandToFigma("create_component_from_node", {
+        nodeId,
+        name,
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error creating component from node", error);
     }
-  }
+  },
 );
 
 // Combine As Variants Tool
 server.tool(
   "combine_as_variants",
-  "Combine multiple main Components into a Component Set (variants). Each component name must use the variant format \"Prop=Value, Prop2=Value\" (e.g. \"Type=Primary, Size=Large\") so Figma can derive the variant properties. Variants are then laid out in a grid (max 4 columns, 24px gap, 24px padding) and the component set is resized to fit them (skipped if the set uses auto layout).",
+  'Combine multiple main Components into a Component Set (variants). Each component name must use the variant format "Prop=Value, Prop2=Value" (e.g. "Type=Primary, Size=Large") so Figma can derive the variant properties. Variants are then laid out in a grid (max 4 columns, 24px gap, 24px padding) and the component set is resized to fit them (skipped if the set uses auto layout).',
   {
     componentIds: z
       .array(z.string())
@@ -3388,7 +3837,9 @@ server.tool(
     parentId: z
       .string()
       .optional()
-      .describe("Optional parent node ID for the component set (default: parent of the first component, or current page)"),
+      .describe(
+        "Optional parent node ID for the component set (default: parent of the first component, or current page)",
+      ),
   },
   async ({ componentIds, name, parentId }: any) => {
     try {
@@ -3401,7 +3852,7 @@ server.tool(
     } catch (error) {
       return errorResult("Error combining components as variants", error);
     }
-  }
+  },
 );
 
 // Add Component Property Tool
@@ -3411,14 +3862,20 @@ server.tool(
   {
     componentId: z.string().describe("ID of the COMPONENT or COMPONENT_SET"),
     name: z.string().describe("Property name"),
-    type: z.enum(["TEXT", "BOOLEAN", "INSTANCE_SWAP"]).describe("Property type"),
+    type: z
+      .enum(["TEXT", "BOOLEAN", "INSTANCE_SWAP"])
+      .describe("Property type"),
     defaultValue: z
       .union([z.string(), z.boolean()])
-      .describe("Default value: string for TEXT, boolean for BOOLEAN, component ID for INSTANCE_SWAP"),
+      .describe(
+        "Default value: string for TEXT, boolean for BOOLEAN, component ID for INSTANCE_SWAP",
+      ),
     targetNodeId: z
       .string()
       .optional()
-      .describe("Optional child node ID to bind (TEXT node for TEXT, any node for BOOLEAN, INSTANCE node for INSTANCE_SWAP)"),
+      .describe(
+        "Optional child node ID to bind (TEXT node for TEXT, any node for BOOLEAN, INSTANCE node for INSTANCE_SWAP)",
+      ),
   },
   async ({ componentId, name, type, defaultValue, targetNodeId }: any) => {
     try {
@@ -3433,7 +3890,7 @@ server.tool(
     } catch (error) {
       return errorResult("Error adding component property", error);
     }
-  }
+  },
 );
 
 // Swap Instance Tool
@@ -3446,12 +3903,15 @@ server.tool(
   },
   async ({ instanceId, componentId }: any) => {
     try {
-      const result = await sendCommandToFigma("swap_instance", { instanceId, componentId });
+      const result = await sendCommandToFigma("swap_instance", {
+        instanceId,
+        componentId,
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error swapping instance", error);
     }
-  }
+  },
 );
 
 // Get Local Variables Tool
@@ -3466,7 +3926,7 @@ server.tool(
     } catch (error) {
       return errorResult("Error getting local variables", error);
     }
-  }
+  },
 );
 
 // Create Variable Collection Tool
@@ -3478,37 +3938,48 @@ server.tool(
     modes: z
       .array(z.string())
       .optional()
-      .describe("Optional mode names, e.g. [\"Light\", \"Dark\"]"),
+      .describe('Optional mode names, e.g. ["Light", "Dark"]'),
   },
   async ({ name, modes }: any) => {
     try {
-      const result = await sendCommandToFigma("create_variable_collection", { name, modes });
+      const result = await sendCommandToFigma("create_variable_collection", {
+        name,
+        modes,
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error creating variable collection", error);
     }
-  }
+  },
 );
 
 // Create Variable Tool
 server.tool(
   "create_variable",
-  "Create a variable in a collection and optionally set its value. Use slashes in the name for grouping (e.g. \"color/primary\"). Colors use RGBA 0-1.",
+  'Create a variable in a collection and optionally set its value. Use slashes in the name for grouping (e.g. "color/primary"). Colors use RGBA 0-1.',
   {
     collectionId: z.string().describe("ID of the variable collection"),
     name: z.string().describe("Variable name"),
-    resolvedType: z.enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"]).describe("Variable type"),
+    resolvedType: z
+      .enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"])
+      .describe("Variable type"),
     value: variableValueSchema
       .optional()
-      .describe("Optional initial value: {r,g,b,a?} for COLOR, number for FLOAT, string for STRING, boolean for BOOLEAN, or {aliasOf: variableId}"),
+      .describe(
+        "Optional initial value: {r,g,b,a?} for COLOR, number for FLOAT, string for STRING, boolean for BOOLEAN, or {aliasOf: variableId}",
+      ),
     modeId: z
       .string()
       .optional()
-      .describe("Optional mode ID for the value (default: collection's default mode)"),
+      .describe(
+        "Optional mode ID for the value (default: collection's default mode)",
+      ),
     scopes: z
       .array(z.string())
       .optional()
-      .describe("Optional variable scopes, e.g. [\"ALL_FILLS\"], [\"GAP\"], [\"CORNER_RADIUS\"]"),
+      .describe(
+        'Optional variable scopes, e.g. ["ALL_FILLS"], ["GAP"], ["CORNER_RADIUS"]',
+      ),
   },
   async ({ collectionId, name, resolvedType, value, modeId, scopes }: any) => {
     try {
@@ -3524,7 +3995,7 @@ server.tool(
     } catch (error) {
       return errorResult("Error creating variable", error);
     }
-  }
+  },
 );
 
 // Set Variable Value Tool
@@ -3533,7 +4004,9 @@ server.tool(
   "Set the value of a variable for a mode. Value may be a literal or an alias to another variable ({aliasOf: variableId}).",
   {
     variableId: z.string().describe("ID of the variable"),
-    value: variableValueSchema.describe("Value: {r,g,b,a?} (0-1), number, string, boolean, or {aliasOf: variableId}"),
+    value: variableValueSchema.describe(
+      "Value: {r,g,b,a?} (0-1), number, string, boolean, or {aliasOf: variableId}",
+    ),
     modeId: z
       .string()
       .optional()
@@ -3541,18 +4014,62 @@ server.tool(
   },
   async ({ variableId, value, modeId }: any) => {
     try {
-      const result = await sendCommandToFigma("set_variable_value", { variableId, value, modeId });
+      const result = await sendCommandToFigma("set_variable_value", {
+        variableId,
+        value,
+        modeId,
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error setting variable value", error);
     }
-  }
+  },
+);
+
+// Delete Variable Tool
+server.tool(
+  "delete_variable",
+  "DESTRUCTIVE: permanently delete a local variable. Nodes bound to it lose the binding. Cannot be undone through this tool.",
+  {
+    variableId: z.string().describe("ID of the variable to delete"),
+  },
+  async ({ variableId }: any) => {
+    try {
+      const result = await sendCommandToFigma("delete_variable", {
+        variableId,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting variable", error);
+    }
+  },
+);
+
+// Delete Variable Collection Tool
+server.tool(
+  "delete_variable_collection",
+  "DESTRUCTIVE: permanently delete a local variable collection together with ALL variables and modes inside it. Nodes bound to those variables lose their bindings. Cannot be undone through this tool.",
+  {
+    collectionId: z
+      .string()
+      .describe("ID of the variable collection to delete"),
+  },
+  async ({ collectionId }: any) => {
+    try {
+      const result = await sendCommandToFigma("delete_variable_collection", {
+        collectionId,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting variable collection", error);
+    }
+  },
 );
 
 // Bind Variable Tool
 server.tool(
   "bind_variable",
-  "Bind a variable to a node property. Fields: fills/strokes (COLOR, bound to the first paint), width, height, itemSpacing, counterAxisSpacing, paddingLeft/Right/Top/Bottom, topLeftRadius/topRightRadius/bottomLeftRadius/bottomRightRadius, strokeWeight, opacity, characters, visible. Shortcuts: \"padding\" (4 sides), \"cornerRadius\" (4 corners). Pass variableId null to unbind.",
+  'Bind a variable to a node property. Fields: fills/strokes (COLOR, bound to the first paint), width, height, itemSpacing, counterAxisSpacing, paddingLeft/Right/Top/Bottom, topLeftRadius/topRightRadius/bottomLeftRadius/bottomRightRadius, strokeWeight, opacity, characters, visible. Shortcuts: "padding" (4 sides), "cornerRadius" (4 corners). Pass variableId null to unbind.',
   {
     nodeId: z.string().describe("ID of the node"),
     field: z
@@ -3586,12 +4103,1105 @@ server.tool(
   },
   async ({ nodeId, field, variableId }: any) => {
     try {
-      const result = await sendCommandToFigma("bind_variable", { nodeId, field, variableId });
+      const result = await sendCommandToFigma("bind_variable", {
+        nodeId,
+        field,
+        variableId,
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error binding variable", error);
     }
+  },
+);
+
+const interactionTriggerSchema = z.enum([
+  "ON_CLICK",
+  "ON_HOVER",
+  "ON_PRESS",
+  "ON_DRAG",
+  "AFTER_TIMEOUT",
+  "MOUSE_ENTER",
+  "MOUSE_LEAVE",
+]);
+
+// Add Interaction Tool
+server.tool(
+  "add_interaction",
+  "Add a prototype interaction (trigger + action) to a node. NAVIGATE/SWAP/OVERLAY need a top-level frame on the same page as destination, SCROLL_TO a node inside the same top-level frame, CHANGE_TO a variant of the same component set (source must be an instance or inside a variant). Directional transitions (MOVE_IN, MOVE_OUT, PUSH, SLIDE_IN, SLIDE_OUT) require a direction. Appends to existing reactions unless replace is true.",
+  {
+    nodeId: z.string().describe("ID of the node that receives the interaction"),
+    trigger: interactionTriggerSchema
+      .optional()
+      .describe("Trigger type (default: ON_CLICK)"),
+    timeout: z
+      .number()
+      .positive()
+      .optional()
+      .describe(
+        "Delay in SECONDS (e.g. 2 = 2s), required for AFTER_TIMEOUT; converted to milliseconds for Figma",
+      ),
+    action: z
+      .enum([
+        "NAVIGATE",
+        "OVERLAY",
+        "SWAP",
+        "SCROLL_TO",
+        "CHANGE_TO",
+        "BACK",
+        "CLOSE",
+        "URL",
+      ])
+      .optional()
+      .describe("Action type (default: NAVIGATE)"),
+    destinationId: z
+      .string()
+      .optional()
+      .describe(
+        "Destination node ID, required for NAVIGATE, OVERLAY, SWAP, SCROLL_TO and CHANGE_TO",
+      ),
+    url: z
+      .string()
+      .url()
+      .optional()
+      .describe("URL to open, required for the URL action"),
+    openInNewTab: z
+      .boolean()
+      .optional()
+      .describe("Open URL in a new tab (URL action only, default true)"),
+    transition: z
+      .object({
+        type: z
+          .enum([
+            "INSTANT",
+            "DISSOLVE",
+            "SMART_ANIMATE",
+            "MOVE_IN",
+            "MOVE_OUT",
+            "PUSH",
+            "SLIDE_IN",
+            "SLIDE_OUT",
+          ])
+          .describe("Transition type"),
+        direction: z
+          .enum(["LEFT", "RIGHT", "TOP", "BOTTOM"])
+          .optional()
+          .describe(
+            "Direction, required for MOVE_IN, MOVE_OUT, PUSH, SLIDE_IN and SLIDE_OUT",
+          ),
+        duration: z
+          .number()
+          .positive()
+          .max(10)
+          .optional()
+          .describe("Duration in SECONDS (e.g. 0.3 = 300ms, default: 0.3)"),
+        easing: z
+          .enum([
+            "LINEAR",
+            "EASE_IN",
+            "EASE_OUT",
+            "EASE_IN_AND_OUT",
+            "GENTLE",
+            "QUICK",
+            "BOUNCY",
+            "SLOW",
+          ])
+          .optional()
+          .describe("Easing curve (default: EASE_OUT)"),
+      })
+      .optional()
+      .describe("Transition for node actions (default: INSTANT)"),
+    preserveScrollPosition: z
+      .boolean()
+      .optional()
+      .describe("Keep the destination's scroll position (node actions only)"),
+    replace: z
+      .boolean()
+      .optional()
+      .describe(
+        "Replace all existing reactions instead of appending (default: false)",
+      ),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("add_interaction", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error adding interaction", error);
+    }
+  },
+);
+
+// Set Reactions Tool
+server.tool(
+  "set_reactions",
+  "Replace all prototype reactions of a node with raw Figma Plugin API Reaction objects ({ trigger, actions: [...] }). Use for advanced cases (e.g. SET_VARIABLE, CONDITIONAL, ON_KEY_DOWN). Trigger timeout/delay are in milliseconds, transition duration in seconds.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    reactions: z
+      .array(z.object({}).passthrough())
+      .describe(
+        "Array of raw Reaction objects; an empty array removes all reactions",
+      ),
+  },
+  async ({ nodeId, reactions }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_reactions", {
+        nodeId,
+        reactions,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting reactions", error);
+    }
+  },
+);
+
+// Remove Interactions Tool
+server.tool(
+  "remove_interactions",
+  "Remove prototype interactions from a node: all of them, or only those with a given trigger type",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    triggerType: interactionTriggerSchema
+      .optional()
+      .describe("Optional trigger type to remove; omit to remove all"),
+  },
+  async ({ nodeId, triggerType }: any) => {
+    try {
+      const result = await sendCommandToFigma("remove_interactions", {
+        nodeId,
+        triggerType,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error removing interactions", error);
+    }
+  },
+);
+
+// Get Flow Starting Points Tool
+server.tool(
+  "get_flow_starting_points",
+  "Get the prototype flow starting points of the current page",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_flow_starting_points");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting flow starting points", error);
+    }
+  },
+);
+
+// Set Flow Starting Point Tool
+server.tool(
+  "set_flow_starting_point",
+  "Add (or rename) a prototype flow starting point on a top-level frame",
+  {
+    nodeId: z
+      .string()
+      .describe("ID of the top-level frame where the flow starts"),
+    name: z.string().describe("Flow name"),
+  },
+  async ({ nodeId, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_flow_starting_point", {
+        nodeId,
+        name,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting flow starting point", error);
+    }
+  },
+);
+
+// Remove Flow Starting Point Tool
+server.tool(
+  "remove_flow_starting_point",
+  "Remove the prototype flow starting point of a frame",
+  {
+    nodeId: z
+      .string()
+      .describe("ID of the frame whose flow starting point should be removed"),
+  },
+  async ({ nodeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("remove_flow_starting_point", {
+        nodeId,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error removing flow starting point", error);
+    }
+  },
+);
+
+// Set Overlay Settings Tool
+server.tool(
+  "set_overlay_settings",
+  "Read the overlay settings (position, background, close on click outside) of a frame used as an overlay. These properties are READ-ONLY in the Figma Plugin API: calling with any setting returns an error together with the current values; set them manually in Figma's Prototype panel.",
+  {
+    nodeId: z.string().describe("ID of the frame used as overlay destination"),
+    position: z
+      .enum([
+        "CENTER",
+        "TOP_LEFT",
+        "TOP_CENTER",
+        "TOP_RIGHT",
+        "BOTTOM_LEFT",
+        "BOTTOM_CENTER",
+        "BOTTOM_RIGHT",
+        "MANUAL",
+      ])
+      .optional()
+      .describe("Desired overlay position"),
+    background: z
+      .union([z.literal("NONE"), z.object({ color: rgbaSchema })])
+      .optional()
+      .describe(
+        'Desired overlay background: "NONE" or { color: {r,g,b,a} } (0-1)',
+      ),
+    closeOnClickOutside: z
+      .boolean()
+      .optional()
+      .describe("Desired close-on-click-outside behavior"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_overlay_settings", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting overlay settings", error);
+    }
+  },
+);
+
+// Set Scroll Behavior Tool
+server.tool(
+  "set_scroll_behavior",
+  "Set prototype scrolling: overflowDirection on a frame, and/or make a child FIXED (fix position when scrolling) or SCROLLS. FIXED moves the node to the top of its parent's layer order (last child); in an auto-layout parent this also changes the node's position in the flow. SCROLLS moves a fixed node back to the top of the scrolling children. STICKY_SCROLLS is not supported by the Figma Plugin API and returns an error.",
+  {
+    nodeId: z
+      .string()
+      .describe(
+        "ID of the node (a frame for overflowDirection, a child of a frame for scrollBehavior)",
+      ),
+    overflowDirection: z
+      .enum(["NONE", "HORIZONTAL", "VERTICAL", "BOTH"])
+      .optional()
+      .describe("Scroll direction of the frame's overflowing content"),
+    scrollBehavior: z
+      .enum(["SCROLLS", "FIXED", "STICKY_SCROLLS"])
+      .optional()
+      .describe("Scroll behavior of the node inside its parent frame"),
+  },
+  async ({ nodeId, overflowDirection, scrollBehavior }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_scroll_behavior", {
+        nodeId,
+        overflowDirection,
+        scrollBehavior,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting scroll behavior", error);
+    }
+  },
+);
+
+// Set Frame Properties Tool
+server.tool(
+  "set_frame_properties",
+  "Set frame layout properties not covered by other tools: layoutPositioning (ABSOLUTE takes a child out of its auto-layout parent's flow, AUTO puts it back), itemReverseZIndex (auto-layout stacking: true = first child on top), clipsContent (clip overflowing children). x/y are applied last, so an ABSOLUTE child can be positioned in the same call.",
+  {
+    nodeId: z
+      .string()
+      .describe("ID of the frame, component, instance or child node"),
+    layoutPositioning: z
+      .enum(["AUTO", "ABSOLUTE"])
+      .optional()
+      .describe("Position of the node inside its auto-layout parent"),
+    itemReverseZIndex: z
+      .boolean()
+      .optional()
+      .describe("Auto-layout frames only: true = first child drawn on top"),
+    clipsContent: z
+      .boolean()
+      .optional()
+      .describe("Whether the frame clips content outside its bounds"),
+    x: z.number().optional().describe("X position relative to the parent"),
+    y: z.number().optional().describe("Y position relative to the parent"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_frame_properties", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting frame properties", error);
+    }
+  },
+);
+
+const textStylePropsSchema = {
+  description: z.string().optional().describe("Optional style description"),
+  fontFamily: z
+    .string()
+    .optional()
+    .describe("Font family (default: Inter, or the style's current family)"),
+  fontStyle: z
+    .string()
+    .optional()
+    .describe(
+      'Font style name as shown in Figma, e.g. "Regular", "Medium", "Semi Bold", "Bold". Takes precedence over fontWeight',
+    ),
+  fontWeight: z
+    .number()
+    .optional()
+    .describe(
+      "Font weight (100-900), mapped to a font style name when fontStyle is not given",
+    ),
+  fontSize: z.number().positive().optional().describe("Font size in pixels"),
+  lineHeight: z
+    .union([
+      z.number(),
+      z.literal("AUTO"),
+      z.object({
+        unit: z.enum(["PIXELS", "PERCENT", "AUTO"]),
+        value: z.number().optional(),
+      }),
+    ])
+    .optional()
+    .describe(
+      'Line height: number (pixels), "AUTO", or { unit: "PIXELS" | "PERCENT", value }',
+    ),
+  letterSpacing: z
+    .union([
+      z.number(),
+      z.object({ unit: z.enum(["PIXELS", "PERCENT"]), value: z.number() }),
+    ])
+    .optional()
+    .describe(
+      'Letter spacing: number (pixels) or { unit: "PIXELS" | "PERCENT", value }',
+    ),
+  textCase: z
+    .enum([
+      "ORIGINAL",
+      "UPPER",
+      "LOWER",
+      "TITLE",
+      "SMALL_CAPS",
+      "SMALL_CAPS_FORCED",
+    ])
+    .optional()
+    .describe("Text case"),
+  textDecoration: z
+    .enum(["NONE", "UNDERLINE", "STRIKETHROUGH"])
+    .optional()
+    .describe("Text decoration"),
+  paragraphSpacing: z
+    .number()
+    .optional()
+    .describe("Paragraph spacing in pixels"),
+};
+
+// Create Text Style Tool
+server.tool(
+  "create_text_style",
+  "Create a local text style (typography token). Use slashes in the name to group styles, e.g. 'Heading/H1'. Returns the style id for apply_text_style.",
+  {
+    name: z.string().min(1).describe("Style name, e.g. 'Body/Medium 14'"),
+    ...textStylePropsSchema,
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_text_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating text style", error);
+    }
+  },
+);
+
+// Update Text Style Tool
+server.tool(
+  "update_text_style",
+  "Update properties of an existing local text style. Text nodes using the style update automatically.",
+  {
+    styleId: z
+      .string()
+      .describe("ID of the text style (from get_styles or create_text_style)"),
+    name: z.string().min(1).optional().describe("New style name"),
+    ...textStylePropsSchema,
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("update_text_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error updating text style", error);
+    }
+  },
+);
+
+// Apply Text Style Tool
+server.tool(
+  "apply_text_style",
+  "Apply a text style to one or more TEXT nodes (also works on text inside instances, e.g. 'I<instanceId>;<textId>'). Reports per-node success.",
+  {
+    styleId: z.string().describe("ID of the text style to apply"),
+    nodeId: z.string().optional().describe("ID of a single text node"),
+    nodeIds: z
+      .array(z.string())
+      .optional()
+      .describe("IDs of multiple text nodes"),
+  },
+  async ({ styleId, nodeId, nodeIds }: any) => {
+    try {
+      const result = await sendCommandToFigma("apply_text_style", {
+        styleId,
+        nodeId,
+        nodeIds,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error applying text style", error);
+    }
+  },
+);
+
+// Set Visible Tool
+server.tool(
+  "set_visible",
+  "Show or hide one or more nodes (also nodes inside instances, e.g. 'I<instanceId>;<childId>', which creates a visibility override). Reports per-node success.",
+  {
+    visible: z.boolean().describe("true to show, false to hide"),
+    nodeId: z.string().optional().describe("ID of a single node"),
+    nodeIds: z.array(z.string()).optional().describe("IDs of multiple nodes"),
+  },
+  async ({ visible, nodeId, nodeIds }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_visible", {
+        visible,
+        nodeId,
+        nodeIds,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting visibility", error);
+    }
+  },
+);
+
+// Get Main Component Tool
+server.tool(
+  "get_main_component",
+  "Return the main component (id, name, variant name and component set) of one or more INSTANCE nodes, read directly in the plugin (no REST API).",
+  {
+    nodeId: z.string().optional().describe("ID of a single instance"),
+    nodeIds: z
+      .array(z.string())
+      .optional()
+      .describe("IDs of multiple instances"),
+  },
+  async ({ nodeId, nodeIds }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_main_component", {
+        nodeId,
+        nodeIds,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting main component", error);
+    }
+  },
+);
+
+// Set Text Decoration Tool
+server.tool(
+  "set_text_decoration",
+  "Set underline / strikethrough / none on one or more TEXT nodes (also text inside instances, e.g. 'I<instanceId>;<textId>'), optionally only for a character range [start, end). Reports per-node success.",
+  {
+    decoration: z
+      .enum(["NONE", "UNDERLINE", "STRIKETHROUGH"])
+      .describe("Text decoration to apply"),
+    nodeId: z.string().optional().describe("ID of a single text node"),
+    nodeIds: z
+      .array(z.string())
+      .optional()
+      .describe("IDs of multiple text nodes"),
+    start: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Optional start character index (inclusive)"),
+    end: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Optional end character index (exclusive)"),
+  },
+  async ({ decoration, nodeId, nodeIds, start, end }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_text_decoration", {
+        decoration,
+        nodeId,
+        nodeIds,
+        start,
+        end,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting text decoration", error);
+    }
+  },
+);
+
+// Delete Style Tool
+server.tool(
+  "delete_style",
+  "Delete a local style (text, paint, effect or grid) by ID. Nodes using it keep their current values but are detached.",
+  {
+    styleId: z.string().describe("ID of the style to delete"),
+  },
+  async ({ styleId }: any) => {
+    try {
+      const result = await sendCommandToFigma("delete_style", { styleId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting style", error);
+    }
+  },
+);
+
+// Shared effect list schema for set_effects and effect styles
+const effectsSchema = z.array(
+  z.object({
+    type: z.enum([
+      "DROP_SHADOW",
+      "INNER_SHADOW",
+      "LAYER_BLUR",
+      "BACKGROUND_BLUR",
+    ]),
+    color: z
+      .object({
+        r: z.number().min(0).max(1),
+        g: z.number().min(0).max(1),
+        b: z.number().min(0).max(1),
+        a: z.number().min(0).max(1).optional(),
+      })
+      .optional()
+      .describe("Shadow color, RGBA 0-1 (default black 10%)"),
+    offset: z
+      .object({ x: z.number(), y: z.number() })
+      .optional()
+      .describe("Shadow offset in pixels"),
+    radius: z.number().min(0).optional().describe("Blur radius in pixels"),
+    spread: z.number().optional().describe("Shadow spread in pixels"),
+    visible: z
+      .boolean()
+      .optional()
+      .describe("Whether the effect is visible (default true)"),
+    blendMode: z.string().optional().describe("Blend mode (default NORMAL)"),
+    showShadowBehindNode: z
+      .boolean()
+      .optional()
+      .describe("Drop shadow only: show behind translucent fills"),
+  }),
+);
+
+// Set Effects Tool
+server.tool(
+  "set_effects",
+  "Replace the effects (drop/inner shadows, layer/background blur) of a node. Pass an empty array to clear all effects.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    effects: effectsSchema.describe("Effects to set on the node, in order"),
+  },
+  async ({ nodeId, effects }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_effects", {
+        nodeId,
+        effects,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting effects", error);
+    }
+  },
+);
+
+// Create Effect Style Tool
+server.tool(
+  "create_effect_style",
+  "Create a local effect style (shadow/blur token), e.g. 'Shadow/lg'. Returns the style id for apply_effect_style.",
+  {
+    name: z.string().min(1).describe("Style name, e.g. 'Shadow/md'"),
+    effects: effectsSchema.min(1).describe("Effects of the style, in order"),
+    description: z.string().optional().describe("Style description"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_effect_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating effect style", error);
+    }
+  },
+);
+
+// Update Effect Style Tool
+server.tool(
+  "update_effect_style",
+  "Update the name, description or effects of a local effect style. Nodes using the style update automatically.",
+  {
+    styleId: z
+      .string()
+      .describe(
+        "ID of the effect style (from get_styles or create_effect_style)",
+      ),
+    name: z.string().min(1).optional().describe("New style name"),
+    effects: effectsSchema
+      .optional()
+      .describe("New effects, replacing the old ones"),
+    description: z.string().optional().describe("New description"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("update_effect_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error updating effect style", error);
+    }
+  },
+);
+
+// Apply Effect Style Tool
+server.tool(
+  "apply_effect_style",
+  "Apply an effect style to one or more nodes (frames, components, instances, shapes). Pass styleId '' to detach. Reports per-node success.",
+  {
+    styleId: z
+      .string()
+      .describe("ID of the effect style to apply, or '' to detach"),
+    nodeId: z.string().optional().describe("ID of a single node"),
+    nodeIds: z.array(z.string()).optional().describe("IDs of multiple nodes"),
+  },
+  async ({ styleId, nodeId, nodeIds }: any) => {
+    try {
+      const result = await sendCommandToFigma("apply_effect_style", {
+        styleId,
+        nodeId,
+        nodeIds,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error applying effect style", error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Design-to-code tools: read designs as a compact, code-oriented spec
+// ---------------------------------------------------------------------------
+
+const DESIGN_SPEC_NOTE =
+  "Spec format: each node references shared values in `styles` by id (layout*, fill*, stroke*, effect*, text*). Layout values are CSS-like (flex, gap, padding, sizing fill/hug/fixed). `exportAs: svg` marks icons/vectors to export as assets instead of rebuilding them; `assets` lists icons and image fills to download with download_design_assets. `designStyles` and `variables` give design-token names to map onto the project's theme.";
+
+function formatRestVariableValue(value: any): unknown {
+  if (value && typeof value === "object") {
+    if (value.type === "VARIABLE_ALIAS") return { aliasOf: value.id };
+    if ("r" in value && "g" in value && "b" in value) {
+      const r = Math.round(value.r * 255);
+      const g = Math.round(value.g * 255);
+      const b = Math.round(value.b * 255);
+      const a = value.a ?? 1;
+      return a >= 1
+        ? `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase()}`
+        : `rgba(${r}, ${g}, ${b}, ${Math.round(a * 1000) / 1000})`;
+    }
   }
+  return value;
+}
+
+async function loadRestVariables(
+  token: string,
+  fileKey: string,
+): Promise<Record<string, VariableInfo> | undefined> {
+  try {
+    const data = await getRestLocalVariables(token, fileKey);
+    const collections = data.meta?.variableCollections || {};
+    const out: Record<string, VariableInfo> = {};
+    for (const [id, v] of Object.entries<any>(data.meta?.variables || {})) {
+      const collection = collections[v.variableCollectionId];
+      const modeNames: Record<string, string> = {};
+      for (const m of collection?.modes || []) modeNames[m.modeId] = m.name;
+      const valuesByMode: Record<string, unknown> = {};
+      for (const [modeId, value] of Object.entries(v.valuesByMode || {})) {
+        valuesByMode[modeNames[modeId] || modeId] = formatRestVariableValue(value);
+      }
+      out[id] = {
+        name: v.name,
+        collection: collection?.name,
+        resolvedType: v.resolvedType,
+        valuesByMode,
+      };
+    }
+    return out;
+  } catch (error) {
+    // Variables REST endpoint requires an Enterprise plan; fall back to ids only.
+    logger.debug(
+      `Variables endpoint unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  }
+}
+
+function requireFigmaToken(): string {
+  const token = getFigmaToken();
+  if (!token) {
+    throw new Error(
+      "FIGMA_ACCESS_TOKEN is not set. Create a personal access token in Figma (Settings > Security > Personal access tokens, scope file_content:read) and pass it to the MCP server environment.",
+    );
+  }
+  return token;
+}
+
+function resolveFileTarget(url?: string, fileKey?: string, nodeId?: string) {
+  if (url) {
+    const parsed = parseFigmaUrl(url);
+    return {
+      fileKey: parsed.fileKey,
+      nodeIds: nodeId ? [normalizeNodeId(nodeId)] : parsed.nodeId ? [parsed.nodeId] : [],
+    };
+  }
+  if (!fileKey) {
+    throw new Error("Provide either a Figma url or a fileKey");
+  }
+  return { fileKey, nodeIds: nodeId ? [normalizeNodeId(nodeId)] : [] };
+}
+
+// Get Design Context Tool (plugin)
+server.tool(
+  "get_design_context",
+  `Read a Figma design from the open file through the plugin and return a compact, code-oriented spec (layout, styles, text, components, variables, assets) for generating UI code. Uses the given nodeIds or the current selection. ${DESIGN_SPEC_NOTE}`,
+  {
+    nodeIds: z
+      .array(z.string())
+      .optional()
+      .describe("Node IDs to read. Defaults to the current selection in Figma."),
+    maxDepth: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Maximum depth of children to include (default: unlimited)"),
+    includeHidden: z
+      .boolean()
+      .optional()
+      .describe("Include hidden layers (default: false)"),
+  },
+  async ({ nodeIds, maxDepth, includeHidden }: any) => {
+    try {
+      const result = (await sendCommandToFigma(
+        "get_design_context",
+        { nodeIds },
+        60000,
+      )) as {
+        fileName: string;
+        page: { id: string; name: string };
+        bundles: any[];
+        variables: Record<string, VariableInfo>;
+      };
+      const spec = simplifyBundles(result.bundles, {
+        maxDepth,
+        includeHidden,
+        variables: result.variables,
+      });
+      return jsonResult({
+        source: "plugin",
+        fileName: result.fileName,
+        page: result.page,
+        ...spec,
+      });
+    } catch (error) {
+      return errorResult("Error getting design context", error);
+    }
+  },
+);
+
+// Get Figma Design From URL Tool (REST API)
+server.tool(
+  "get_figma_design_from_url",
+  `Read a Figma design through the Figma REST API (no plugin needed, requires FIGMA_ACCESS_TOKEN). Pass a Figma URL (figma.com/design/<fileKey>/...?node-id=1-2) or fileKey + nodeId. With a node it returns the code-oriented spec; without a node it returns the file outline (pages and top-level frames) so you can pick one. ${DESIGN_SPEC_NOTE}`,
+  {
+    url: z
+      .string()
+      .optional()
+      .describe("Figma file/design URL, optionally with ?node-id="),
+    fileKey: z.string().optional().describe("Figma file key (alternative to url)"),
+    nodeId: z
+      .string()
+      .optional()
+      .describe("Node ID such as 1:2 or 1-2 (overrides node-id in url)"),
+    maxDepth: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Maximum depth of children to include (default: unlimited)"),
+    includeHidden: z
+      .boolean()
+      .optional()
+      .describe("Include hidden layers (default: false)"),
+  },
+  async ({ url, fileKey, nodeId, maxDepth, includeHidden }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const target = resolveFileTarget(url, fileKey, nodeId);
+
+      if (target.nodeIds.length === 0) {
+        const file = await getFileOutline(token, target.fileKey, 2);
+        const pages = (file.document?.children || []).map((page: any) => ({
+          id: page.id,
+          name: page.name,
+          frames: (page.children || []).map((n: any) => ({
+            id: n.id,
+            name: n.name,
+            type: n.type,
+          })),
+        }));
+        return jsonResult({
+          source: "rest",
+          fileKey: target.fileKey,
+          fileName: file.name,
+          lastModified: file.lastModified,
+          pages,
+          hint: "Call again with nodeId of the frame to convert into code.",
+        });
+      }
+
+      const data = await getFileNodes(
+        token,
+        target.fileKey,
+        target.nodeIds,
+        maxDepth !== undefined ? maxDepth + 1 : undefined,
+      );
+      const bundles = target.nodeIds.map((id) => {
+        const entry = data.nodes?.[id];
+        if (!entry || !entry.document) {
+          throw new Error(`Node ${id} not found in file ${target.fileKey}`);
+        }
+        return entry;
+      });
+      const variables = await loadRestVariables(token, target.fileKey);
+      const spec = simplifyBundles(bundles, {
+        maxDepth,
+        includeHidden,
+        variables,
+      });
+      return jsonResult({
+        source: "rest",
+        fileKey: target.fileKey,
+        fileName: data.name,
+        lastModified: data.lastModified,
+        ...spec,
+      });
+    } catch (error) {
+      return errorResult("Error reading Figma design", error);
+    }
+  },
+);
+
+const assetItemSchema = z.object({
+  nodeId: z
+    .string()
+    .optional()
+    .describe("Node ID to render (icons, illustrations, frames)"),
+  imageRef: z
+    .string()
+    .optional()
+    .describe("imageRef of an image fill (from spec.assets.images) to download the original bitmap"),
+  fileName: z
+    .string()
+    .describe("File name to write, e.g. 'arrow-left.svg' or 'hero.png' (no directories)"),
+  format: z
+    .enum(["svg", "png", "jpg", "pdf"])
+    .optional()
+    .describe("Render format for nodeId (default: from file extension, else png)"),
+  scale: z
+    .number()
+    .positive()
+    .max(4)
+    .optional()
+    .describe("Scale for png/jpg renders (default: 2)"),
+});
+
+function safeAssetPath(dir: string, fileName: string): string {
+  const base = path.basename(fileName);
+  if (!base || base !== fileName || base === "." || base === "..") {
+    throw new Error(`Invalid fileName "${fileName}": use a plain file name without directories`);
+  }
+  return path.join(dir, base);
+}
+
+function inferFormat(item: { format?: string; fileName: string }): "svg" | "png" | "jpg" | "pdf" {
+  if (item.format) return item.format as any;
+  const ext = path.extname(item.fileName).slice(1).toLowerCase();
+  if (ext === "svg" || ext === "png" || ext === "pdf") return ext;
+  if (ext === "jpg" || ext === "jpeg") return "jpg";
+  return "png";
+}
+
+// Download Design Assets Tool
+server.tool(
+  "download_design_assets",
+  "Download icons, illustrations and image fills from a Figma design into a local folder so generated code can reference them. Use source 'plugin' for designs read with get_design_context, or 'rest' (with url/fileKey) for designs read with get_figma_design_from_url.",
+  {
+    source: z
+      .enum(["plugin", "rest"])
+      .describe("Where to read the assets from"),
+    url: z.string().optional().describe("Figma URL (rest source)"),
+    fileKey: z.string().optional().describe("Figma file key (rest source)"),
+    localPath: z
+      .string()
+      .describe("Directory to write files to (absolute, or relative to the MCP server working directory). Created if missing."),
+    items: z.array(assetItemSchema).min(1).max(50),
+  },
+  async ({ source, url, fileKey, localPath, items }: any) => {
+    try {
+      const dir = path.resolve(process.cwd(), localPath);
+      for (const item of items) {
+        if (!item.nodeId && !item.imageRef) {
+          throw new Error(`Item "${item.fileName}" needs nodeId or imageRef`);
+        }
+        safeAssetPath(dir, item.fileName);
+      }
+      await mkdir(dir, { recursive: true });
+      const written: Array<{ fileName: string; path?: string; error?: string }> = [];
+
+      if (source === "plugin") {
+        const result = (await sendCommandToFigma(
+          "export_node_assets",
+          {
+            items: items.map((item: any) => ({
+              nodeId: item.nodeId,
+              imageRef: item.imageRef,
+              format: item.imageRef ? undefined : inferFormat(item).toUpperCase(),
+              scale: item.scale ?? 2,
+            })),
+          },
+          120000,
+        )) as { results: Array<{ success: boolean; data?: string; error?: string }> };
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const res = result.results[i];
+          if (!res || !res.success || !res.data) {
+            written.push({ fileName: item.fileName, error: res?.error || "Export failed" });
+            continue;
+          }
+          const filePath = safeAssetPath(dir, item.fileName);
+          await writeFile(filePath, Buffer.from(res.data, "base64"));
+          written.push({ fileName: item.fileName, path: filePath });
+        }
+      } else {
+        const token = requireFigmaToken();
+        const target = resolveFileTarget(url, fileKey);
+        const renderUrls: Record<string, string | null> = {};
+        const groups = new Map<string, any[]>();
+        for (const item of items.filter((i: any) => i.nodeId && !i.imageRef)) {
+          const format = inferFormat(item);
+          const scale = format === "svg" ? 1 : item.scale ?? 2;
+          const key = `${format}@${scale}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key)!.push(item);
+        }
+        for (const [key, groupItems] of groups) {
+          const [format, scale] = key.split("@");
+          const urls = await getImageRenderUrls(
+            token,
+            target.fileKey,
+            groupItems.map((i) => normalizeNodeId(i.nodeId)),
+            format as any,
+            Number(scale),
+          );
+          for (const i of groupItems) {
+            renderUrls[i.fileName] = urls[normalizeNodeId(i.nodeId)] ?? null;
+          }
+        }
+        const needsFills = items.some((i: any) => i.imageRef);
+        const fillUrls = needsFills ? await getImageFillUrls(token, target.fileKey) : {};
+
+        for (const item of items) {
+          try {
+            const sourceUrl = item.imageRef ? fillUrls[item.imageRef] : renderUrls[item.fileName];
+            if (!sourceUrl) {
+              throw new Error(
+                item.imageRef
+                  ? `No image found for imageRef ${item.imageRef}`
+                  : `Figma could not render node ${item.nodeId}`,
+              );
+            }
+            const bytes = await downloadBytes(sourceUrl);
+            const filePath = safeAssetPath(dir, item.fileName);
+            await writeFile(filePath, bytes);
+            written.push({ fileName: item.fileName, path: filePath });
+          } catch (error) {
+            written.push({
+              fileName: item.fileName,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+
+      return jsonResult({
+        directory: dir,
+        saved: written.filter((w) => w.path).length,
+        failed: written.filter((w) => w.error).length,
+        files: written,
+      });
+    } catch (error) {
+      return errorResult("Error downloading design assets", error);
+    }
+  },
+);
+
+server.prompt(
+  "design_to_code",
+  "Workflow for turning a Figma design into code",
+  () => {
+    return {
+      messages: [
+        {
+          role: "assistant",
+          content: {
+            type: "text",
+            text: `When generating code from a Figma design:
+
+1. Read the design:
+   - Figma open with the plugin connected: join_channel, then get_design_context (uses the selection, or pass nodeIds).
+   - Only a Figma link: get_figma_design_from_url with the url (needs FIGMA_ACCESS_TOKEN). Without node-id it returns the page/frame outline first.
+   - For large screens, read with maxDepth first, then read child nodes separately.
+2. Look at the design: export_node_as_image (plugin) for a visual reference to compare against.
+3. Follow the project, not Figma: reuse existing components, theme tokens, and the styling approach already in the codebase. Map designStyles/variables names to existing tokens before writing raw values.
+4. Translate the spec:
+   - layout display/flexDirection/gap/padding → flexbox; sizing fill → flex: 1 / width: 100%, hug → auto, fixed → explicit size.
+   - position: absolute only where the spec says so (non auto-layout parents).
+   - INSTANCE nodes with component.name → reuse/create one component per main component, props from component.properties.
+   - richText segments → nested inline elements.
+5. Assets: nodes with exportAs: svg and spec.assets.images → download_design_assets into the project's asset folder; never redraw icons with divs.
+6. Verify: build/lint the project and compare the result with the exported image.`,
+          },
+        },
+      ],
+      description: "Workflow for turning a Figma design into code",
+    };
+  },
 );
 
 // Update the join_channel tool
@@ -3633,13 +5243,14 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Error joining channel: ${error instanceof Error ? error.message : String(error)
-              }`,
+            text: `Error joining channel: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         ],
       };
     }
-  }
+  },
 );
 
 // Start the server
@@ -3648,21 +5259,22 @@ async function main() {
     // Try to connect to Figma socket server
     connectToFigma();
   } catch (error) {
-    logger.warn(`Could not connect to Figma initially: ${error instanceof Error ? error.message : String(error)}`);
-    logger.warn('Will try to connect when the first command is sent');
+    logger.warn(
+      `Could not connect to Figma initially: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    logger.warn("Will try to connect when the first command is sent");
   }
 
   // Start the MCP server with stdio transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  logger.info('FigmaMCP server running on stdio');
+  logger.info("FigmaMCP server running on stdio");
 }
 
 // Run the server
-main().catch(error => {
-  logger.error(`Error starting FigmaMCP server: ${error instanceof Error ? error.message : String(error)}`);
+main().catch((error) => {
+  logger.error(
+    `Error starting FigmaMCP server: ${error instanceof Error ? error.message : String(error)}`,
+  );
   process.exit(1);
 });
-
-
-
