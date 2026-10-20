@@ -4,6 +4,12 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-20
+
+### Fixed
+
+- Server MCP kini berhenti sendiri saat client menutup stdio atau mengirim SIGINT/SIGTERM; sebelumnya proses tetap hidup karena terus mencoba menyambung ulang ke relay.
+
 ## [1.1.0] - 2026-10-20
 
 ### Added

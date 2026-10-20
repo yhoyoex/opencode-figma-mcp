@@ -516,7 +516,7 @@ var pendingRequests = /* @__PURE__ */ new Map();
 var currentChannel = null;
 var server = new McpServer({
   name: "opencode-figma-mcp",
-  version: "1.1.0"
+  version: "1.1.1"
 });
 var args = process.argv.slice(2);
 var serverArg = args.find((arg) => arg.startsWith("--server="));
@@ -2875,9 +2875,30 @@ function connectToFigma(port = 3055) {
       request.reject(new Error("Connection closed"));
       pendingRequests.delete(id);
     }
+    if (shuttingDown) return;
     logger.info("Attempting to reconnect in 2 seconds...");
-    setTimeout(() => connectToFigma(port), 2e3);
+    reconnectTimer = setTimeout(() => connectToFigma(port), 2e3);
   });
+}
+var shuttingDown = false;
+var reconnectTimer = null;
+function shutdown(reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`Shutting down (${reason})`);
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  for (const [id, request] of pendingRequests.entries()) {
+    clearTimeout(request.timeout);
+    request.reject(new Error("Server shutting down"));
+    pendingRequests.delete(id);
+  }
+  try {
+    ws?.close();
+  } catch {
+  }
+  server.close().catch(() => {
+  }).finally(() => process.exit(0));
+  setTimeout(() => process.exit(0), 1e3).unref();
 }
 async function joinChannel(channelName) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -4294,6 +4315,10 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info("FigmaMCP server running on stdio");
+  process.stdin.on("end", () => shutdown("stdin closed"));
+  process.stdin.on("close", () => shutdown("stdin closed"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 main().catch((error) => {
   logger.error(

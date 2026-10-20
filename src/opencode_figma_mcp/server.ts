@@ -93,7 +93,7 @@ let currentChannel: string | null = null;
 // Create MCP server
 const server = new McpServer({
   name: "opencode-figma-mcp",
-  version: "1.1.0",
+  version: "1.1.1",
 });
 
 // Add command line argument parsing
@@ -3422,10 +3422,38 @@ function connectToFigma(port: number = 3055) {
       pendingRequests.delete(id);
     }
 
-    // Attempt to reconnect
+    // Attempt to reconnect (unless the MCP client has gone away)
+    if (shuttingDown) return;
     logger.info("Attempting to reconnect in 2 seconds...");
-    setTimeout(() => connectToFigma(port), 2000);
+    reconnectTimer = setTimeout(() => connectToFigma(port), 2000);
   });
+}
+
+let shuttingDown = false;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Exit once the MCP client closes stdio or signals us, so the process never lingers
+function shutdown(reason: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`Shutting down (${reason})`);
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  for (const [id, request] of pendingRequests.entries()) {
+    clearTimeout(request.timeout);
+    request.reject(new Error("Server shutting down"));
+    pendingRequests.delete(id);
+  }
+  try {
+    ws?.close();
+  } catch {
+    // ignore
+  }
+  server
+    .close()
+    .catch(() => {})
+    .finally(() => process.exit(0));
+  // Hard exit if close hangs
+  setTimeout(() => process.exit(0), 1000).unref();
 }
 
 // Function to join a channel
@@ -5269,6 +5297,11 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info("FigmaMCP server running on stdio");
+
+  process.stdin.on("end", () => shutdown("stdin closed"));
+  process.stdin.on("close", () => shutdown("stdin closed"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 // Run the server
