@@ -36,6 +36,7 @@
     "socket": "bun run src/socket.ts",
     "setup": "./scripts/setup.sh",
     "build": "tsup",
+    "prepare": "tsup",
     "build:watch": "tsup --watch",
     "dev": "bun run build:watch",
     "pub:release": "bun run build && npm publish"
