@@ -19,7 +19,7 @@
     "design-to-code",
     "ai"
   ],
-  "version": "0.3.5",
+  "version": "1.0.0",
   "module": "dist/server.js",
   "main": "dist/server.js",
   "bin": {
