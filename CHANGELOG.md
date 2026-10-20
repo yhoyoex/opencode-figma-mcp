@@ -4,6 +4,8 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-20
+
 ### Added
 
 - Tool `create_node_from_svg`: membuat node vector yang bisa diedit dari markup SVG (mis. mengganti ikon PNG dengan vector), opsional di dalam parent dan posisi tertentu.
