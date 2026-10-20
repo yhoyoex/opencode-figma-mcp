@@ -93,7 +93,7 @@ let currentChannel: string | null = null;
 // Create MCP server
 const server = new McpServer({
   name: "opencode-figma-mcp",
-  version: "1.0.0",
+  version: "1.1.0",
 });
 
 // Add command line argument parsing
