@@ -1,9 +1,9 @@
 {
   "mcpServers": {
-    "TalkToFigma": {
-      "command": "bunx",
+    "opencode-figma": {
+      "command": "bun",
       "args": [
-        "cursor-talk-to-figma-mcp@latest"
+        "dist/server.js"
       ]
     }
   }

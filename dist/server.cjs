@@ -22,13 +22,505 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// src/talk_to_figma_mcp/server.ts
+// src/opencode_figma_mcp/server.ts
 var import_mcp = require("@modelcontextprotocol/sdk/server/mcp.js");
 var import_stdio = require("@modelcontextprotocol/sdk/server/stdio.js");
 var import_zod = require("zod");
 var import_ws = __toESM(require("ws"), 1);
 var import_uuid = require("uuid");
 var import_promises = require("fs/promises");
+var import_path = __toESM(require("path"), 1);
+
+// src/opencode_figma_mcp/design/simplify.ts
+var VECTOR_TYPES = /* @__PURE__ */ new Set([
+  "VECTOR",
+  "BOOLEAN_OPERATION",
+  "STAR",
+  "REGULAR_POLYGON"
+]);
+var SHAPE_TYPES = /* @__PURE__ */ new Set(["ELLIPSE", "LINE", "RECTANGLE"]);
+function round(n, digits = 2) {
+  const f = Math.pow(10, digits);
+  return Math.round(n * f) / f;
+}
+function colorToCss(color, paintOpacity = 1) {
+  const r = Math.round(color.r * 255);
+  const g = Math.round(color.g * 255);
+  const b = Math.round(color.b * 255);
+  const a = round((color.a ?? 1) * paintOpacity, 3);
+  if (a >= 1) {
+    return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+  }
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+function gradientToCss(paint) {
+  const stops = (paint.gradientStops || []).map(
+    (s) => `${colorToCss(s.color, paint.opacity ?? 1)} ${round(s.position * 100, 1)}%`
+  ).join(", ");
+  const handles = paint.gradientHandlePositions;
+  if (paint.type === "GRADIENT_LINEAR") {
+    let angle = 180;
+    if (handles && handles.length >= 2) {
+      const dx = handles[1].x - handles[0].x;
+      const dy = handles[1].y - handles[0].y;
+      angle = round(Math.atan2(dy, dx) * 180 / Math.PI + 90, 1);
+    }
+    return `linear-gradient(${angle}deg, ${stops})`;
+  }
+  if (paint.type === "GRADIENT_RADIAL") {
+    return `radial-gradient(circle, ${stops})`;
+  }
+  if (paint.type === "GRADIENT_ANGULAR") {
+    return `conic-gradient(${stops})`;
+  }
+  return `/* ${paint.type} */ linear-gradient(${stops})`;
+}
+function simplifyPaint(paint) {
+  if (paint.type === "SOLID") {
+    return colorToCss(paint.color, paint.opacity ?? 1);
+  }
+  if (paint.type && paint.type.startsWith("GRADIENT_")) {
+    return gradientToCss(paint);
+  }
+  if (paint.type === "IMAGE") {
+    const img = { type: "IMAGE", imageRef: paint.imageRef ?? paint.imageHash };
+    if (paint.scaleMode) img.scaleMode = paint.scaleMode;
+    if (paint.opacity !== void 0 && paint.opacity < 1) img.opacity = paint.opacity;
+    return img;
+  }
+  return { type: paint.type };
+}
+function visiblePaints(paints) {
+  if (!Array.isArray(paints)) return [];
+  return paints.filter((p) => p && p.visible !== false);
+}
+function padding(node) {
+  const t = node.paddingTop || 0;
+  const r = node.paddingRight || 0;
+  const b = node.paddingBottom || 0;
+  const l = node.paddingLeft || 0;
+  if (!t && !r && !b && !l) return void 0;
+  if (t === b && l === r) return t === l ? `${t}px` : `${t}px ${r}px`;
+  return `${t}px ${r}px ${b}px ${l}px`;
+}
+var JUSTIFY = {
+  MIN: "flex-start",
+  CENTER: "center",
+  MAX: "flex-end",
+  SPACE_BETWEEN: "space-between"
+};
+var ALIGN = {
+  MIN: "flex-start",
+  CENTER: "center",
+  MAX: "flex-end",
+  BASELINE: "baseline"
+};
+function sizingOf(node, axis) {
+  const v = node[`layoutSizing${axis}`];
+  if (!v) return void 0;
+  return v.toLowerCase();
+}
+function buildLayout(node, parent) {
+  const layout = {};
+  const mode = node.layoutMode;
+  if (mode === "HORIZONTAL" || mode === "VERTICAL") {
+    layout.display = "flex";
+    layout.flexDirection = mode === "HORIZONTAL" ? "row" : "column";
+    if (node.layoutWrap === "WRAP") layout.flexWrap = "wrap";
+    const justify = JUSTIFY[node.primaryAxisAlignItems || "MIN"];
+    if (justify && justify !== "flex-start") layout.justifyContent = justify;
+    const align = ALIGN[node.counterAxisAlignItems || "MIN"];
+    if (align && align !== "flex-start") layout.alignItems = align;
+    if (node.itemSpacing && node.primaryAxisAlignItems !== "SPACE_BETWEEN") {
+      layout.gap = `${node.itemSpacing}px`;
+    }
+    if (node.layoutWrap === "WRAP" && node.counterAxisSpacing) {
+      layout.rowGap = `${node.counterAxisSpacing}px`;
+    }
+    const pad = padding(node);
+    if (pad) layout.padding = pad;
+  } else if (mode === "GRID") {
+    layout.display = "grid";
+    const pad = padding(node);
+    if (pad) layout.padding = pad;
+  }
+  const parentIsAutoLayout = parent && (parent.layoutMode === "HORIZONTAL" || parent.layoutMode === "VERTICAL" || parent.layoutMode === "GRID");
+  if (parentIsAutoLayout && node.layoutPositioning !== "ABSOLUTE") {
+    const h = sizingOf(node, "Horizontal");
+    const v = sizingOf(node, "Vertical");
+    if (h || v) layout.sizing = { horizontal: h, vertical: v };
+    if (node.layoutGrow === 1) layout.flexGrow = 1;
+    if (node.layoutAlign === "STRETCH") layout.alignSelf = "stretch";
+  } else if (parent) {
+    layout.position = "absolute";
+    const box = node.absoluteBoundingBox;
+    const pbox = parent.absoluteBoundingBox;
+    if (box && pbox) {
+      layout.left = round(box.x - pbox.x);
+      layout.top = round(box.y - pbox.y);
+    }
+    if (node.constraints) {
+      layout.constraints = {
+        horizontal: node.constraints.horizontal,
+        vertical: node.constraints.vertical
+      };
+    }
+  } else {
+    const h = sizingOf(node, "Horizontal");
+    const v = sizingOf(node, "Vertical");
+    if (h || v) layout.sizing = { horizontal: h, vertical: v };
+  }
+  if (node.clipsContent) layout.overflow = "hidden";
+  if (node.minWidth) layout.minWidth = node.minWidth;
+  if (node.maxWidth) layout.maxWidth = node.maxWidth;
+  if (node.minHeight) layout.minHeight = node.minHeight;
+  if (node.maxHeight) layout.maxHeight = node.maxHeight;
+  return Object.keys(layout).length ? layout : void 0;
+}
+function buildTextStyle(style) {
+  if (!style) return void 0;
+  const ts = {
+    fontFamily: style.fontFamily,
+    fontWeight: style.fontWeight,
+    fontSize: style.fontSize
+  };
+  if (style.italic) ts.fontStyle = "italic";
+  if (style.lineHeightUnit === "PIXELS" && style.lineHeightPx) {
+    ts.lineHeight = `${round(style.lineHeightPx)}px`;
+  } else if (style.lineHeightUnit === "FONT_SIZE_%" && style.lineHeightPercentFontSize) {
+    ts.lineHeight = round(style.lineHeightPercentFontSize / 100, 3);
+  } else if (style.lineHeightPx && style.fontSize) {
+    ts.lineHeight = round(style.lineHeightPx / style.fontSize, 3);
+  }
+  if (style.letterSpacing) ts.letterSpacing = `${round(style.letterSpacing)}px`;
+  if (style.textAlignHorizontal && style.textAlignHorizontal !== "LEFT") {
+    ts.textAlign = style.textAlignHorizontal.toLowerCase();
+  }
+  if (style.textCase && style.textCase !== "ORIGINAL") {
+    ts.textTransform = style.textCase === "UPPER" ? "uppercase" : style.textCase === "LOWER" ? "lowercase" : style.textCase === "TITLE" ? "capitalize" : style.textCase.toLowerCase();
+  }
+  if (style.textDecoration && style.textDecoration !== "NONE") {
+    ts.textDecoration = style.textDecoration === "STRIKETHROUGH" ? "line-through" : "underline";
+  }
+  if (style.paragraphSpacing) ts.paragraphSpacing = style.paragraphSpacing;
+  return ts;
+}
+function buildEffects(effects) {
+  const list = Array.isArray(effects) ? effects.filter((e) => e.visible !== false) : [];
+  if (!list.length) return void 0;
+  const out = {};
+  const shadows = list.filter((e) => e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW").map(
+    (e) => `${e.type === "INNER_SHADOW" ? "inset " : ""}${round(e.offset?.x || 0)}px ${round(e.offset?.y || 0)}px ${round(e.radius || 0)}px ${round(e.spread || 0)}px ${colorToCss(e.color || { r: 0, g: 0, b: 0, a: 0.25 })}`
+  );
+  if (shadows.length) out.boxShadow = shadows.join(", ");
+  const blur = list.find((e) => e.type === "LAYER_BLUR");
+  if (blur) out.filter = `blur(${round(blur.radius)}px)`;
+  const bgBlur = list.find((e) => e.type === "BACKGROUND_BLUR");
+  if (bgBlur) out.backdropFilter = `blur(${round(bgBlur.radius)}px)`;
+  return out;
+}
+function buildStroke(node) {
+  const paints = visiblePaints(node.strokes);
+  if (!paints.length) return void 0;
+  const stroke = { colors: paints.map(simplifyPaint) };
+  if (node.individualStrokeWeights) {
+    const w = node.individualStrokeWeights;
+    stroke.width = `${w.top}px ${w.right}px ${w.bottom}px ${w.left}px`;
+  } else if (node.strokeWeight !== void 0) {
+    stroke.width = `${node.strokeWeight}px`;
+  }
+  if (node.strokeAlign) stroke.align = node.strokeAlign.toLowerCase();
+  if (Array.isArray(node.strokeDashes) && node.strokeDashes.length) stroke.dashes = node.strokeDashes;
+  return stroke;
+}
+function isVectorOnly(node) {
+  if (VECTOR_TYPES.has(node.type)) return true;
+  if (SHAPE_TYPES.has(node.type)) {
+    return !visiblePaints(node.fills).some((p) => p.type === "IMAGE");
+  }
+  if (["GROUP", "FRAME", "INSTANCE", "COMPONENT"].includes(node.type)) {
+    const children = (node.children || []).filter((c) => c.visible !== false);
+    if (!children.length) return false;
+    if (node.layoutMode && node.layoutMode !== "NONE") return false;
+    return children.every(isVectorOnly);
+  }
+  return false;
+}
+function containsVector(node) {
+  if (VECTOR_TYPES.has(node.type)) return true;
+  return (node.children || []).some(containsVector);
+}
+var StyleRegistry = class {
+  byKey = /* @__PURE__ */ new Map();
+  styles = {};
+  counters = {};
+  ref(prefix, value) {
+    if (value === void 0) return void 0;
+    const key = `${prefix}:${JSON.stringify(value)}`;
+    const existing = this.byKey.get(key);
+    if (existing) return existing;
+    this.counters[prefix] = (this.counters[prefix] || 0) + 1;
+    const id = `${prefix}${this.counters[prefix]}`;
+    this.byKey.set(key, id);
+    this.styles[id] = value;
+    return id;
+  }
+};
+function collectBoundVariables(bound, ctx) {
+  if (!bound || typeof bound !== "object") return void 0;
+  const out = {};
+  for (const [field, value] of Object.entries(bound)) {
+    const list = Array.isArray(value) ? value : [value];
+    const ids = list.filter((v) => v && v.type === "VARIABLE_ALIAS" && v.id).map((v) => v.id);
+    if (!ids.length) continue;
+    ids.forEach((id) => ctx.variableIds.add(id));
+    const names = ids.map((id) => ctx.options.variables?.[id]?.name ?? id);
+    out[field] = names.length === 1 ? names[0] : names;
+  }
+  return Object.keys(out).length ? out : void 0;
+}
+function simplifyNode(node, parent, depth, ctx) {
+  if (!node) return null;
+  if (node.visible === false && !ctx.options.includeHidden) return null;
+  const out = { id: node.id, name: node.name, type: node.type };
+  const box = node.absoluteBoundingBox;
+  if (box) out.size = { width: round(box.width), height: round(box.height) };
+  if (node.type === "INSTANCE" && node.componentId) {
+    const comp = ctx.components[node.componentId];
+    out.component = { id: node.componentId, name: comp?.name };
+    if (node.componentProperties) {
+      const props = {};
+      for (const [k, v] of Object.entries(node.componentProperties)) {
+        props[k.replace(/#\d+:\d+$/, "")] = v.value;
+      }
+      out.component.properties = props;
+    }
+  }
+  const layout = buildLayout(node, parent);
+  if (layout) out.layout = ctx.registry.ref("layout", layout);
+  const fills = visiblePaints(node.fills);
+  if (fills.length && node.type !== "TEXT") {
+    out.fills = ctx.registry.ref("fill", fills.map(simplifyPaint));
+  } else if (fills.length && node.type === "TEXT") {
+    out.color = ctx.registry.ref("fill", fills.map(simplifyPaint));
+  }
+  for (const f of fills) {
+    if (f.type === "IMAGE") {
+      ctx.assets.images.push({ nodeId: node.id, name: node.name, imageRef: f.imageRef ?? f.imageHash });
+    }
+  }
+  const stroke = buildStroke(node);
+  if (stroke) out.stroke = ctx.registry.ref("stroke", stroke);
+  const effects = buildEffects(node.effects);
+  if (effects) out.effects = ctx.registry.ref("effect", effects);
+  if (node.opacity !== void 0 && node.opacity < 1) out.opacity = round(node.opacity, 3);
+  if (node.blendMode && !["PASS_THROUGH", "NORMAL"].includes(node.blendMode)) {
+    out.blendMode = node.blendMode.toLowerCase();
+  }
+  if (Array.isArray(node.rectangleCornerRadii)) {
+    const [tl, tr, br, bl] = node.rectangleCornerRadii;
+    out.borderRadius = tl === tr && tr === br && br === bl ? `${tl}px` : `${tl}px ${tr}px ${br}px ${bl}px`;
+  } else if (node.cornerRadius) {
+    out.borderRadius = `${node.cornerRadius}px`;
+  }
+  if (node.type === "ELLIPSE") out.borderRadius = "50%";
+  if (node.type === "TEXT") {
+    out.text = node.characters;
+    out.textStyle = ctx.registry.ref("text", buildTextStyle(node.style));
+    const overrides = node.characterStyleOverrides || [];
+    const table = node.styleOverrideTable || {};
+    if (overrides.some((o) => o) && node.characters) {
+      const segments = [];
+      let current = overrides[0] || 0;
+      let start = 0;
+      const chars = node.characters;
+      for (let i = 1; i <= chars.length; i++) {
+        const o = i < overrides.length ? overrides[i] || 0 : 0;
+        if (i === chars.length || o !== current) {
+          const seg = { text: chars.slice(start, i) };
+          const ov = table[current];
+          if (current && ov) {
+            seg.style = ctx.registry.ref("text", buildTextStyle({ ...node.style, ...ov }));
+            const ovFills = visiblePaints(ov.fills);
+            if (ovFills.length) seg.color = ctx.registry.ref("fill", ovFills.map(simplifyPaint));
+          }
+          segments.push(seg);
+          start = i;
+          current = o;
+        }
+      }
+      out.richText = segments;
+    }
+  }
+  if (node.styles && typeof node.styles === "object") {
+    const named = {};
+    for (const [kind, styleId] of Object.entries(node.styles)) {
+      const meta = ctx.styleMeta[styleId];
+      named[kind] = meta?.name ?? styleId;
+    }
+    out.designStyles = named;
+  }
+  const vars = collectBoundVariables(node.boundVariables, ctx);
+  if (vars) out.variables = vars;
+  if (node.children && node.children.length && isVectorOnly(node) && containsVector(node)) {
+    out.exportAs = "svg";
+    ctx.assets.icons.push({ nodeId: node.id, name: node.name, suggestedFormat: "svg" });
+    return out;
+  }
+  if (VECTOR_TYPES.has(node.type)) {
+    out.exportAs = "svg";
+    if (!parent || !isVectorOnly(parent)) {
+      ctx.assets.icons.push({ nodeId: node.id, name: node.name, suggestedFormat: "svg" });
+    }
+    return out;
+  }
+  if (Array.isArray(node.children) && node.children.length) {
+    const maxDepth = ctx.options.maxDepth;
+    if (maxDepth !== void 0 && depth >= maxDepth) {
+      out.childrenTruncated = node.children.length;
+    } else {
+      const children = node.children.map((c) => simplifyNode(c, node, depth + 1, ctx)).filter((c) => c !== null);
+      if (children.length) out.children = children;
+    }
+  }
+  return out;
+}
+function simplifyBundles(bundles, options = {}) {
+  const registry = new StyleRegistry();
+  const styleMeta = {};
+  const components = {};
+  const componentSets = {};
+  for (const b of bundles) {
+    Object.assign(styleMeta, b.styles || {});
+    Object.assign(components, b.components || {});
+    Object.assign(componentSets, b.componentSets || {});
+  }
+  const ctx = {
+    registry,
+    styleMeta,
+    components,
+    options,
+    assets: { icons: [], images: [] },
+    variableIds: /* @__PURE__ */ new Set()
+  };
+  const nodes = bundles.map((b) => simplifyNode(b.document, null, 0, ctx)).filter((n) => n !== null);
+  const spec = { nodes, styles: registry.styles, assets: ctx.assets };
+  if (Object.keys(components).length) {
+    spec.components = Object.fromEntries(
+      Object.entries(components).map(([id, c]) => [
+        id,
+        {
+          name: c.name,
+          description: c.description || void 0,
+          componentSetId: c.componentSetId || void 0,
+          remote: c.remote || void 0
+        }
+      ])
+    );
+  }
+  if (Object.keys(componentSets).length) {
+    spec.componentSets = Object.fromEntries(
+      Object.entries(componentSets).map(([id, c]) => [id, { name: c.name, description: c.description || void 0 }])
+    );
+  }
+  if (ctx.variableIds.size) {
+    const vars = {};
+    for (const id of ctx.variableIds) {
+      vars[id] = options.variables?.[id] ?? { name: id };
+    }
+    spec.variables = vars;
+  }
+  const seen = /* @__PURE__ */ new Set();
+  spec.assets.images = spec.assets.images.filter((img) => {
+    if (!img.imageRef || seen.has(img.imageRef)) return false;
+    seen.add(img.imageRef);
+    return true;
+  });
+  return spec;
+}
+
+// src/opencode_figma_mcp/design/figma_rest.ts
+var API_BASE = "https://api.figma.com/v1";
+function getFigmaToken() {
+  return process.env.FIGMA_ACCESS_TOKEN || process.env.FIGMA_API_KEY || process.env.FIGMA_TOKEN || void 0;
+}
+function parseFigmaUrl(input) {
+  let url;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new Error(`Invalid Figma URL: ${input}`);
+  }
+  if (!/(^|\.)figma\.com$/.test(url.hostname)) {
+    throw new Error(`Not a figma.com URL: ${input}`);
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  const kindIndex = parts.findIndex(
+    (p) => ["design", "file", "proto", "board"].includes(p)
+  );
+  if (kindIndex === -1 || !parts[kindIndex + 1]) {
+    throw new Error(`Could not find a file key in URL: ${input}`);
+  }
+  let fileKey = parts[kindIndex + 1];
+  const branchIndex = parts.indexOf("branch");
+  if (branchIndex !== -1 && parts[branchIndex + 1]) {
+    fileKey = parts[branchIndex + 1];
+  }
+  const rawNodeId = url.searchParams.get("node-id");
+  return {
+    fileKey,
+    nodeId: rawNodeId ? normalizeNodeId(rawNodeId) : void 0
+  };
+}
+function normalizeNodeId(nodeId) {
+  return nodeId.includes(":") ? nodeId : nodeId.replace("-", ":");
+}
+async function figmaGet(path2, token) {
+  const res = await fetch(`${API_BASE}${path2}`, {
+    headers: { "X-Figma-Token": token }
+  });
+  const body = await res.text();
+  if (!res.ok) {
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body);
+      detail = parsed.err || parsed.message || body;
+    } catch {
+    }
+    const hint = res.status === 403 ? " (check that FIGMA_ACCESS_TOKEN is valid and has access to this file)" : res.status === 429 ? " (Figma rate limit reached, try again later)" : "";
+    throw new Error(`Figma API ${res.status}: ${detail}${hint}`);
+  }
+  return JSON.parse(body);
+}
+async function getFileNodes(token, fileKey, nodeIds, depth) {
+  const params = new URLSearchParams({ ids: nodeIds.join(",") });
+  if (depth !== void 0) params.set("depth", String(depth));
+  return figmaGet(`/files/${encodeURIComponent(fileKey)}/nodes?${params}`, token);
+}
+async function getFileOutline(token, fileKey, depth = 2) {
+  return figmaGet(`/files/${encodeURIComponent(fileKey)}?depth=${depth}`, token);
+}
+async function getImageRenderUrls(token, fileKey, nodeIds, format, scale = 1) {
+  const params = new URLSearchParams({ ids: nodeIds.join(","), format });
+  if (format !== "svg") params.set("scale", String(scale));
+  const data = await figmaGet(`/images/${encodeURIComponent(fileKey)}?${params}`, token);
+  if (data.err) throw new Error(`Figma image render error: ${data.err}`);
+  return data.images || {};
+}
+async function getImageFillUrls(token, fileKey) {
+  const data = await figmaGet(`/files/${encodeURIComponent(fileKey)}/images`, token);
+  return data.meta?.images || {};
+}
+async function getLocalVariables(token, fileKey) {
+  return figmaGet(`/files/${encodeURIComponent(fileKey)}/variables/local`, token);
+}
+async function downloadBytes(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Download failed (${res.status}) for ${url}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+// src/opencode_figma_mcp/server.ts
 var logger = {
   info: (message) => process.stderr.write(`[INFO] ${message}
 `),
@@ -45,7 +537,7 @@ var ws = null;
 var pendingRequests = /* @__PURE__ */ new Map();
 var currentChannel = null;
 var server = new import_mcp.McpServer({
-  name: "TalkToFigmaMCP",
+  name: "opencode-figma-mcp",
   version: "1.0.0"
 });
 var args = process.argv.slice(2);
@@ -187,14 +679,16 @@ function filterFigmaNode(node) {
       delete processedFill.boundVariables;
       delete processedFill.imageRef;
       if (processedFill.gradientStops) {
-        processedFill.gradientStops = processedFill.gradientStops.map((stop) => {
-          const processedStop = { ...stop };
-          if (processedStop.color) {
-            processedStop.color = rgbaToHex(processedStop.color);
+        processedFill.gradientStops = processedFill.gradientStops.map(
+          (stop) => {
+            const processedStop = { ...stop };
+            if (processedStop.color) {
+              processedStop.color = rgbaToHex(processedStop.color);
+            }
+            delete processedStop.boundVariables;
+            return processedStop;
           }
-          delete processedStop.boundVariables;
-          return processedStop;
-        });
+        );
       }
       if (processedFill.color) {
         processedFill.color = rgbaToHex(processedFill.color);
@@ -255,7 +749,9 @@ server.tool(
         content: [
           {
             type: "text",
-            text: JSON.stringify(results.map((result) => filterFigmaNode(result.info)))
+            text: JSON.stringify(
+              results.map((result) => filterFigmaNode(result.info))
+            )
           }
         ]
       };
@@ -341,11 +837,15 @@ server.tool(
     paddingRight: import_zod.z.number().optional().describe("Right padding for auto-layout frame"),
     paddingBottom: import_zod.z.number().optional().describe("Bottom padding for auto-layout frame"),
     paddingLeft: import_zod.z.number().optional().describe("Left padding for auto-layout frame"),
-    primaryAxisAlignItems: import_zod.z.enum(["MIN", "MAX", "CENTER", "SPACE_BETWEEN"]).optional().describe("Primary axis alignment for auto-layout frame. Note: When set to SPACE_BETWEEN, itemSpacing will be ignored as children will be evenly spaced."),
+    primaryAxisAlignItems: import_zod.z.enum(["MIN", "MAX", "CENTER", "SPACE_BETWEEN"]).optional().describe(
+      "Primary axis alignment for auto-layout frame. Note: When set to SPACE_BETWEEN, itemSpacing will be ignored as children will be evenly spaced."
+    ),
     counterAxisAlignItems: import_zod.z.enum(["MIN", "MAX", "CENTER", "BASELINE"]).optional().describe("Counter axis alignment for auto-layout frame"),
     layoutSizingHorizontal: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Horizontal sizing mode for auto-layout frame"),
     layoutSizingVertical: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Vertical sizing mode for auto-layout frame"),
-    itemSpacing: import_zod.z.number().optional().describe("Distance between children in auto-layout frame. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN.")
+    itemSpacing: import_zod.z.number().optional().describe(
+      "Distance between children in auto-layout frame. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN."
+    )
   },
   async ({
     x,
@@ -431,7 +931,16 @@ server.tool(
     name: import_zod.z.string().optional().describe("Semantic layer name for the text node"),
     parentId: import_zod.z.string().optional().describe("Optional parent node ID to append the text to")
   },
-  async ({ x, y, text, fontSize, fontWeight, fontColor, name, parentId }) => {
+  async ({
+    x,
+    y,
+    text,
+    fontSize,
+    fontWeight,
+    fontColor,
+    name,
+    parentId
+  }) => {
     try {
       const result = await sendCommandToFigma("create_text", {
         x,
@@ -461,6 +970,35 @@ server.tool(
           }
         ]
       };
+    }
+  }
+);
+server.tool(
+  "create_node_from_svg",
+  "Create vector nodes from SVG markup (e.g. to replace raster PNG icons with editable vectors). Figma wraps the result in a FRAME containing the vector paths.",
+  {
+    svg: import_zod.z.string().min(1).describe(
+      "Full SVG markup, starting with an <svg> element (include viewBox/width/height for correct sizing)"
+    ),
+    name: import_zod.z.string().optional().describe("Optional name for the created node"),
+    parentId: import_zod.z.string().optional().describe(
+      "Optional parent node ID (must support children, e.g. a frame, group or section; default: current page)"
+    ),
+    x: import_zod.z.number().optional().describe("Optional X position (relative to the parent)"),
+    y: import_zod.z.number().optional().describe("Optional Y position (relative to the parent)")
+  },
+  async ({ svg, name, parentId, x, y }) => {
+    try {
+      const result = await sendCommandToFigma("create_node_from_svg", {
+        svg,
+        name,
+        parentId,
+        x,
+        y
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating node from SVG", error);
     }
   }
 );
@@ -677,7 +1215,9 @@ server.tool(
   },
   async ({ nodeIds }) => {
     try {
-      const result = await sendCommandToFigma("delete_multiple_nodes", { nodeIds });
+      const result = await sendCommandToFigma("delete_multiple_nodes", {
+        nodeIds
+      });
       return {
         content: [
           {
@@ -861,14 +1401,24 @@ server.tool(
   "Create or update an annotation",
   {
     nodeId: import_zod.z.string().describe("The ID of the node to annotate"),
-    annotationId: import_zod.z.string().optional().describe("The ID of the annotation to update (if updating existing annotation)"),
+    annotationId: import_zod.z.string().optional().describe(
+      "The ID of the annotation to update (if updating existing annotation)"
+    ),
     labelMarkdown: import_zod.z.string().describe("The annotation text in markdown format"),
     categoryId: import_zod.z.string().optional().describe("The ID of the annotation category"),
-    properties: import_zod.z.array(import_zod.z.object({
-      type: import_zod.z.string()
-    })).optional().describe("Additional properties for the annotation")
+    properties: import_zod.z.array(
+      import_zod.z.object({
+        type: import_zod.z.string()
+      })
+    ).optional().describe("Additional properties for the annotation")
   },
-  async ({ nodeId, annotationId, labelMarkdown, categoryId, properties }) => {
+  async ({
+    nodeId,
+    annotationId,
+    labelMarkdown,
+    categoryId,
+    properties
+  }) => {
     try {
       const result = await sendCommandToFigma("set_annotation", {
         nodeId,
@@ -907,10 +1457,14 @@ server.tool(
         nodeId: import_zod.z.string().describe("The ID of the node to annotate"),
         labelMarkdown: import_zod.z.string().describe("The annotation text in markdown format"),
         categoryId: import_zod.z.string().optional().describe("The ID of the annotation category"),
-        annotationId: import_zod.z.string().optional().describe("The ID of the annotation to update (if updating existing annotation)"),
-        properties: import_zod.z.array(import_zod.z.object({
-          type: import_zod.z.string()
-        })).optional().describe("Additional properties for the annotation")
+        annotationId: import_zod.z.string().optional().describe(
+          "The ID of the annotation to update (if updating existing annotation)"
+        ),
+        properties: import_zod.z.array(
+          import_zod.z.object({
+            type: import_zod.z.string()
+          })
+        ).optional().describe("Additional properties for the annotation")
       })
     ).describe("Array of annotations to apply")
   },
@@ -951,9 +1505,7 @@ server.tool(
         detailedResponse = `
 
 Nodes that failed:
-${failedResults.map(
-          (item) => `- ${item.nodeId}: ${item.error || "Unknown error"}`
-        ).join("\n")}`;
+${failedResults.map((item) => `- ${item.nodeId}: ${item.error || "Unknown error"}`).join("\n")}`;
       }
       return {
         content: [
@@ -980,8 +1532,12 @@ server.tool(
   "create_component_instance",
   "Create an instance of a component in Figma. For LOCAL components (from get_local_components), use componentId with the id field. For published LIBRARY components, use componentKey with the publishedKey field.",
   {
-    componentId: import_zod.z.string().optional().describe("ID of a local component (use the id field from get_local_components result). Use this for unpublished/local components."),
-    componentKey: import_zod.z.string().optional().describe("Key of a published library component to instantiate (use the publishedKey field from get_local_components result). Only works for published components."),
+    componentId: import_zod.z.string().optional().describe(
+      "ID of a local component (use the id field from get_local_components result). Use this for unpublished/local components."
+    ),
+    componentKey: import_zod.z.string().optional().describe(
+      "Key of a published library component to instantiate (use the publishedKey field from get_local_components result). Only works for published components."
+    ),
     x: import_zod.z.number().describe("X position"),
     y: import_zod.z.number().describe("Y position"),
     parentId: import_zod.z.string().optional().describe("Optional parent node ID to place the instance into")
@@ -1020,7 +1576,9 @@ server.tool(
   "get_instance_overrides",
   "Get all override properties from a selected component instance. These overrides can be applied to other instances, which will swap them to match the source component.",
   {
-    nodeId: import_zod.z.string().optional().describe("Optional ID of the component instance to get overrides from. If not provided, currently selected instance will be used.")
+    nodeId: import_zod.z.string().optional().describe(
+      "Optional ID of the component instance to get overrides from. If not provided, currently selected instance will be used."
+    )
   },
   async ({ nodeId }) => {
     try {
@@ -1053,7 +1611,9 @@ server.tool(
   "Apply previously copied overrides to selected component instances. Target instances will be swapped to the source component and all copied override properties will be applied.",
   {
     sourceInstanceId: import_zod.z.string().describe("ID of the source component instance"),
-    targetNodeIds: import_zod.z.array(import_zod.z.string()).describe("Array of target instance IDs. Currently selected instances will be used.")
+    targetNodeIds: import_zod.z.array(import_zod.z.string()).describe(
+      "Array of target instance IDs. Currently selected instances will be used."
+    )
   },
   async ({ sourceInstanceId, targetNodeIds }) => {
     try {
@@ -1307,7 +1867,9 @@ server.tool(
   "Scan for child nodes with specific types in the selected Figma node",
   {
     nodeId: import_zod.z.string().describe("ID of the node to scan"),
-    types: import_zod.z.array(import_zod.z.string()).describe("Array of node types to find in the child nodes (e.g. ['COMPONENT', 'FRAME'])")
+    types: import_zod.z.array(import_zod.z.string()).describe(
+      "Array of node types to find in the child nodes (e.g. ['COMPONENT', 'FRAME'])"
+    )
   },
   async ({ nodeId, types }) => {
     try {
@@ -1538,9 +2100,7 @@ server.tool(
         detailedResponse = `
 
 Nodes that failed:
-${failedResults.map(
-          (item) => `- ${item.nodeId}: ${item.error || "Unknown error"}`
-        ).join("\n")}`;
+${failedResults.map((item) => `- ${item.nodeId}: ${item.error || "Unknown error"}`).join("\n")}`;
       }
       return {
         content: [
@@ -1818,7 +2378,13 @@ server.tool(
     paddingBottom: import_zod.z.number().optional().describe("Bottom padding value"),
     paddingLeft: import_zod.z.number().optional().describe("Left padding value")
   },
-  async ({ nodeId, paddingTop, paddingRight, paddingBottom, paddingLeft }) => {
+  async ({
+    nodeId,
+    paddingTop,
+    paddingRight,
+    paddingBottom,
+    paddingLeft
+  }) => {
     try {
       const result = await sendCommandToFigma("set_padding", {
         nodeId,
@@ -1830,9 +2396,12 @@ server.tool(
       const typedResult = result;
       const paddingMessages = [];
       if (paddingTop !== void 0) paddingMessages.push(`top: ${paddingTop}`);
-      if (paddingRight !== void 0) paddingMessages.push(`right: ${paddingRight}`);
-      if (paddingBottom !== void 0) paddingMessages.push(`bottom: ${paddingBottom}`);
-      if (paddingLeft !== void 0) paddingMessages.push(`left: ${paddingLeft}`);
+      if (paddingRight !== void 0)
+        paddingMessages.push(`right: ${paddingRight}`);
+      if (paddingBottom !== void 0)
+        paddingMessages.push(`bottom: ${paddingBottom}`);
+      if (paddingLeft !== void 0)
+        paddingMessages.push(`left: ${paddingLeft}`);
       const paddingText = paddingMessages.length > 0 ? `padding (${paddingMessages.join(", ")})` : "padding";
       return {
         content: [
@@ -1859,8 +2428,12 @@ server.tool(
   "Set primary and counter axis alignment for an auto-layout frame in Figma",
   {
     nodeId: import_zod.z.string().describe("The ID of the frame to modify"),
-    primaryAxisAlignItems: import_zod.z.enum(["MIN", "MAX", "CENTER", "SPACE_BETWEEN"]).optional().describe("Primary axis alignment (MIN/MAX = left/right in horizontal, top/bottom in vertical). Note: When set to SPACE_BETWEEN, itemSpacing will be ignored as children will be evenly spaced."),
-    counterAxisAlignItems: import_zod.z.enum(["MIN", "MAX", "CENTER", "BASELINE"]).optional().describe("Counter axis alignment (MIN/MAX = top/bottom in horizontal, left/right in vertical)")
+    primaryAxisAlignItems: import_zod.z.enum(["MIN", "MAX", "CENTER", "SPACE_BETWEEN"]).optional().describe(
+      "Primary axis alignment (MIN/MAX = left/right in horizontal, top/bottom in vertical). Note: When set to SPACE_BETWEEN, itemSpacing will be ignored as children will be evenly spaced."
+    ),
+    counterAxisAlignItems: import_zod.z.enum(["MIN", "MAX", "CENTER", "BASELINE"]).optional().describe(
+      "Counter axis alignment (MIN/MAX = top/bottom in horizontal, left/right in vertical)"
+    )
   },
   async ({ nodeId, primaryAxisAlignItems, counterAxisAlignItems }) => {
     try {
@@ -1871,8 +2444,10 @@ server.tool(
       });
       const typedResult = result;
       const alignMessages = [];
-      if (primaryAxisAlignItems !== void 0) alignMessages.push(`primary: ${primaryAxisAlignItems}`);
-      if (counterAxisAlignItems !== void 0) alignMessages.push(`counter: ${counterAxisAlignItems}`);
+      if (primaryAxisAlignItems !== void 0)
+        alignMessages.push(`primary: ${primaryAxisAlignItems}`);
+      if (counterAxisAlignItems !== void 0)
+        alignMessages.push(`counter: ${counterAxisAlignItems}`);
       const alignText = alignMessages.length > 0 ? `axis alignment (${alignMessages.join(", ")})` : "axis alignment";
       return {
         content: [
@@ -1896,11 +2471,17 @@ server.tool(
 );
 server.tool(
   "set_layout_sizing",
-  "Set horizontal and vertical sizing modes for an auto-layout frame in Figma",
+  "Set horizontal and vertical sizing modes for a frame, component, component set, instance or text node in Figma",
   {
-    nodeId: import_zod.z.string().describe("The ID of the frame to modify"),
-    layoutSizingHorizontal: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Horizontal sizing mode (HUG for frames/text only, FILL for auto-layout children only)"),
-    layoutSizingVertical: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Vertical sizing mode (HUG for frames/text only, FILL for auto-layout children only)")
+    nodeId: import_zod.z.string().describe(
+      "The ID of the frame, component, component set, instance or text node to modify"
+    ),
+    layoutSizingHorizontal: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe(
+      "Horizontal sizing mode (HUG for auto-layout frames/components/instances and text, FILL for auto-layout children only)"
+    ),
+    layoutSizingVertical: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe(
+      "Vertical sizing mode (HUG for auto-layout frames/components/instances and text, FILL for auto-layout children only)"
+    )
   },
   async ({ nodeId, layoutSizingHorizontal, layoutSizingVertical }) => {
     try {
@@ -1911,8 +2492,10 @@ server.tool(
       });
       const typedResult = result;
       const sizingMessages = [];
-      if (layoutSizingHorizontal !== void 0) sizingMessages.push(`horizontal: ${layoutSizingHorizontal}`);
-      if (layoutSizingVertical !== void 0) sizingMessages.push(`vertical: ${layoutSizingVertical}`);
+      if (layoutSizingHorizontal !== void 0)
+        sizingMessages.push(`horizontal: ${layoutSizingHorizontal}`);
+      if (layoutSizingVertical !== void 0)
+        sizingMessages.push(`vertical: ${layoutSizingVertical}`);
       const sizingText = sizingMessages.length > 0 ? `layout sizing (${sizingMessages.join(", ")})` : "layout sizing";
       return {
         content: [
@@ -1939,19 +2522,25 @@ server.tool(
   "Set distance between children in an auto-layout frame",
   {
     nodeId: import_zod.z.string().describe("The ID of the frame to modify"),
-    itemSpacing: import_zod.z.number().optional().describe("Distance between children. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN."),
-    counterAxisSpacing: import_zod.z.number().optional().describe("Distance between wrapped rows/columns. Only works when layoutWrap is set to WRAP.")
+    itemSpacing: import_zod.z.number().optional().describe(
+      "Distance between children. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN."
+    ),
+    counterAxisSpacing: import_zod.z.number().optional().describe(
+      "Distance between wrapped rows/columns. Only works when layoutWrap is set to WRAP."
+    )
   },
   async ({ nodeId, itemSpacing, counterAxisSpacing }) => {
     try {
       const params = { nodeId };
       if (itemSpacing !== void 0) params.itemSpacing = itemSpacing;
-      if (counterAxisSpacing !== void 0) params.counterAxisSpacing = counterAxisSpacing;
+      if (counterAxisSpacing !== void 0)
+        params.counterAxisSpacing = counterAxisSpacing;
       const result = await sendCommandToFigma("set_item_spacing", params);
       const typedResult = result;
       let message = `Updated spacing for frame "${typedResult.name}":`;
       if (itemSpacing !== void 0) message += ` itemSpacing=${itemSpacing}`;
-      if (counterAxisSpacing !== void 0) message += ` counterAxisSpacing=${counterAxisSpacing}`;
+      if (counterAxisSpacing !== void 0)
+        message += ` counterAxisSpacing=${counterAxisSpacing}`;
       return {
         content: [
           {
@@ -2044,11 +2633,13 @@ server.tool(
   "create_connections",
   "Create connections between nodes using the default connector style",
   {
-    connections: import_zod.z.array(import_zod.z.object({
-      startNodeId: import_zod.z.string().describe("ID of the starting node"),
-      endNodeId: import_zod.z.string().describe("ID of the ending node"),
-      text: import_zod.z.string().optional().describe("Optional text to display on the connector")
-    })).describe("Array of node connections to create")
+    connections: import_zod.z.array(
+      import_zod.z.object({
+        startNodeId: import_zod.z.string().describe("ID of the starting node"),
+        endNodeId: import_zod.z.string().describe("ID of the ending node"),
+        text: import_zod.z.string().optional().describe("Optional text to display on the connector")
+      })
+    ).describe("Array of node connections to create")
   },
   async ({ connections }) => {
     try {
@@ -2251,14 +2842,20 @@ function connectToFigma(port = 3055) {
           clearTimeout(request.timeout);
           request.timeout = setTimeout(() => {
             if (pendingRequests.has(requestId)) {
-              logger.error(`Request ${requestId} timed out after extended period of inactivity`);
+              logger.error(
+                `Request ${requestId} timed out after extended period of inactivity`
+              );
               pendingRequests.delete(requestId);
               request.reject(new Error("Request to Figma timed out"));
             }
           }, 6e4);
-          logger.info(`Progress update for ${progressData.commandType}: ${progressData.progress}% - ${progressData.message}`);
+          logger.info(
+            `Progress update for ${progressData.commandType}: ${progressData.progress}% - ${progressData.message}`
+          );
           if (progressData.status === "completed" && progressData.progress === 100) {
-            logger.info(`Operation ${progressData.commandType} completed, waiting for final result`);
+            logger.info(
+              `Operation ${progressData.commandType} completed, waiting for final result`
+            );
           }
         }
         return;
@@ -2279,10 +2876,14 @@ function connectToFigma(port = 3055) {
         }
         pendingRequests.delete(myResponse.id);
       } else {
-        logger.info(`Received broadcast message: ${JSON.stringify(myResponse)}`);
+        logger.info(
+          `Received broadcast message: ${JSON.stringify(myResponse)}`
+        );
       }
     } catch (error) {
-      logger.error(`Error parsing message: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(
+        `Error parsing message: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   });
   ws.on("error", (error) => {
@@ -2309,7 +2910,9 @@ async function joinChannel(channelName) {
     currentChannel = channelName;
     logger.info(`Joined channel: ${channelName}`);
   } catch (error) {
-    logger.error(`Failed to join channel: ${error instanceof Error ? error.message : String(error)}`);
+    logger.error(
+      `Failed to join channel: ${error instanceof Error ? error.message : String(error)}`
+    );
     throw error;
   }
 }
@@ -2343,7 +2946,9 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
     const timeout = setTimeout(() => {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
-        logger.error(`Request ${id} to Figma timed out after ${timeoutMs / 1e3} seconds`);
+        logger.error(
+          `Request ${id} to Figma timed out after ${timeoutMs / 1e3} seconds`
+        );
         reject(new Error("Request to Figma timed out"));
       }
     }, timeoutMs);
@@ -2380,7 +2985,9 @@ server.tool(
         (source) => source !== void 0 && source !== ""
       );
       if (sources.length !== 1) {
-        throw new Error("Provide exactly one of imagePath, imageUrl or imageBase64");
+        throw new Error(
+          "Provide exactly one of imagePath, imageUrl or imageBase64"
+        );
       }
       let base64Data;
       if (imagePath) {
@@ -2388,9 +2995,13 @@ server.tool(
       } else if (imageUrl) {
         const response = await fetch(imageUrl);
         if (!response.ok) {
-          throw new Error(`Failed to fetch image URL (HTTP ${response.status})`);
+          throw new Error(
+            `Failed to fetch image URL (HTTP ${response.status})`
+          );
         }
-        base64Data = Buffer.from(await response.arrayBuffer()).toString("base64");
+        base64Data = Buffer.from(await response.arrayBuffer()).toString(
+          "base64"
+        );
       } else {
         base64Data = imageBase64.replace(/^data:[^;,]+;base64,/, "");
       }
@@ -2502,10 +3113,14 @@ server.tool(
   "Move a node into a new parent node (e.g. a section, frame or group). Preserves the node's absolute position unless x/y are provided",
   {
     nodeId: import_zod.z.string().describe("The ID of the node to move"),
-    parentId: import_zod.z.string().describe("The ID of the new parent node (must support children, e.g. a section, frame or group)"),
+    parentId: import_zod.z.string().describe(
+      "The ID of the new parent node (must support children, e.g. a section, frame or group)"
+    ),
     x: import_zod.z.number().optional().describe("Optional X position relative to the new parent"),
     y: import_zod.z.number().optional().describe("Optional Y position relative to the new parent"),
-    index: import_zod.z.number().optional().describe("Optional child index to insert at (default: appended as last child)")
+    index: import_zod.z.number().optional().describe(
+      "Optional child index to insert at (default: appended as last child)"
+    )
   },
   async ({ nodeId, parentId, x, y, index }) => {
     try {
@@ -2581,7 +3196,10 @@ server.tool(
   },
   async ({ nodeId, name }) => {
     try {
-      const result = await sendCommandToFigma("create_component_from_node", { nodeId, name });
+      const result = await sendCommandToFigma("create_component_from_node", {
+        nodeId,
+        name
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error creating component from node", error);
@@ -2594,7 +3212,9 @@ server.tool(
   {
     componentIds: import_zod.z.array(import_zod.z.string()).min(1).describe("IDs of the COMPONENT nodes to combine"),
     name: import_zod.z.string().optional().describe("Optional name for the component set"),
-    parentId: import_zod.z.string().optional().describe("Optional parent node ID for the component set (default: parent of the first component, or current page)")
+    parentId: import_zod.z.string().optional().describe(
+      "Optional parent node ID for the component set (default: parent of the first component, or current page)"
+    )
   },
   async ({ componentIds, name, parentId }) => {
     try {
@@ -2616,8 +3236,12 @@ server.tool(
     componentId: import_zod.z.string().describe("ID of the COMPONENT or COMPONENT_SET"),
     name: import_zod.z.string().describe("Property name"),
     type: import_zod.z.enum(["TEXT", "BOOLEAN", "INSTANCE_SWAP"]).describe("Property type"),
-    defaultValue: import_zod.z.union([import_zod.z.string(), import_zod.z.boolean()]).describe("Default value: string for TEXT, boolean for BOOLEAN, component ID for INSTANCE_SWAP"),
-    targetNodeId: import_zod.z.string().optional().describe("Optional child node ID to bind (TEXT node for TEXT, any node for BOOLEAN, INSTANCE node for INSTANCE_SWAP)")
+    defaultValue: import_zod.z.union([import_zod.z.string(), import_zod.z.boolean()]).describe(
+      "Default value: string for TEXT, boolean for BOOLEAN, component ID for INSTANCE_SWAP"
+    ),
+    targetNodeId: import_zod.z.string().optional().describe(
+      "Optional child node ID to bind (TEXT node for TEXT, any node for BOOLEAN, INSTANCE node for INSTANCE_SWAP)"
+    )
   },
   async ({ componentId, name, type, defaultValue, targetNodeId }) => {
     try {
@@ -2643,7 +3267,10 @@ server.tool(
   },
   async ({ instanceId, componentId }) => {
     try {
-      const result = await sendCommandToFigma("swap_instance", { instanceId, componentId });
+      const result = await sendCommandToFigma("swap_instance", {
+        instanceId,
+        componentId
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error swapping instance", error);
@@ -2672,7 +3299,10 @@ server.tool(
   },
   async ({ name, modes }) => {
     try {
-      const result = await sendCommandToFigma("create_variable_collection", { name, modes });
+      const result = await sendCommandToFigma("create_variable_collection", {
+        name,
+        modes
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error creating variable collection", error);
@@ -2686,9 +3316,15 @@ server.tool(
     collectionId: import_zod.z.string().describe("ID of the variable collection"),
     name: import_zod.z.string().describe("Variable name"),
     resolvedType: import_zod.z.enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"]).describe("Variable type"),
-    value: variableValueSchema.optional().describe("Optional initial value: {r,g,b,a?} for COLOR, number for FLOAT, string for STRING, boolean for BOOLEAN, or {aliasOf: variableId}"),
-    modeId: import_zod.z.string().optional().describe("Optional mode ID for the value (default: collection's default mode)"),
-    scopes: import_zod.z.array(import_zod.z.string()).optional().describe('Optional variable scopes, e.g. ["ALL_FILLS"], ["GAP"], ["CORNER_RADIUS"]')
+    value: variableValueSchema.optional().describe(
+      "Optional initial value: {r,g,b,a?} for COLOR, number for FLOAT, string for STRING, boolean for BOOLEAN, or {aliasOf: variableId}"
+    ),
+    modeId: import_zod.z.string().optional().describe(
+      "Optional mode ID for the value (default: collection's default mode)"
+    ),
+    scopes: import_zod.z.array(import_zod.z.string()).optional().describe(
+      'Optional variable scopes, e.g. ["ALL_FILLS"], ["GAP"], ["CORNER_RADIUS"]'
+    )
   },
   async ({ collectionId, name, resolvedType, value, modeId, scopes }) => {
     try {
@@ -2711,15 +3347,55 @@ server.tool(
   "Set the value of a variable for a mode. Value may be a literal or an alias to another variable ({aliasOf: variableId}).",
   {
     variableId: import_zod.z.string().describe("ID of the variable"),
-    value: variableValueSchema.describe("Value: {r,g,b,a?} (0-1), number, string, boolean, or {aliasOf: variableId}"),
+    value: variableValueSchema.describe(
+      "Value: {r,g,b,a?} (0-1), number, string, boolean, or {aliasOf: variableId}"
+    ),
     modeId: import_zod.z.string().optional().describe("Optional mode ID (default: collection's default mode)")
   },
   async ({ variableId, value, modeId }) => {
     try {
-      const result = await sendCommandToFigma("set_variable_value", { variableId, value, modeId });
+      const result = await sendCommandToFigma("set_variable_value", {
+        variableId,
+        value,
+        modeId
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error setting variable value", error);
+    }
+  }
+);
+server.tool(
+  "delete_variable",
+  "DESTRUCTIVE: permanently delete a local variable. Nodes bound to it lose the binding. Cannot be undone through this tool.",
+  {
+    variableId: import_zod.z.string().describe("ID of the variable to delete")
+  },
+  async ({ variableId }) => {
+    try {
+      const result = await sendCommandToFigma("delete_variable", {
+        variableId
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting variable", error);
+    }
+  }
+);
+server.tool(
+  "delete_variable_collection",
+  "DESTRUCTIVE: permanently delete a local variable collection together with ALL variables and modes inside it. Nodes bound to those variables lose their bindings. Cannot be undone through this tool.",
+  {
+    collectionId: import_zod.z.string().describe("ID of the variable collection to delete")
+  },
+  async ({ collectionId }) => {
+    try {
+      const result = await sendCommandToFigma("delete_variable_collection", {
+        collectionId
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting variable collection", error);
     }
   }
 );
@@ -2754,11 +3430,835 @@ server.tool(
   },
   async ({ nodeId, field, variableId }) => {
     try {
-      const result = await sendCommandToFigma("bind_variable", { nodeId, field, variableId });
+      const result = await sendCommandToFigma("bind_variable", {
+        nodeId,
+        field,
+        variableId
+      });
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error binding variable", error);
     }
+  }
+);
+var interactionTriggerSchema = import_zod.z.enum([
+  "ON_CLICK",
+  "ON_HOVER",
+  "ON_PRESS",
+  "ON_DRAG",
+  "AFTER_TIMEOUT",
+  "MOUSE_ENTER",
+  "MOUSE_LEAVE"
+]);
+server.tool(
+  "add_interaction",
+  "Add a prototype interaction (trigger + action) to a node. NAVIGATE/SWAP/OVERLAY need a top-level frame on the same page as destination, SCROLL_TO a node inside the same top-level frame, CHANGE_TO a variant of the same component set (source must be an instance or inside a variant). Directional transitions (MOVE_IN, MOVE_OUT, PUSH, SLIDE_IN, SLIDE_OUT) require a direction. Appends to existing reactions unless replace is true.",
+  {
+    nodeId: import_zod.z.string().describe("ID of the node that receives the interaction"),
+    trigger: interactionTriggerSchema.optional().describe("Trigger type (default: ON_CLICK)"),
+    timeout: import_zod.z.number().positive().optional().describe(
+      "Delay in SECONDS (e.g. 2 = 2s), required for AFTER_TIMEOUT; converted to milliseconds for Figma"
+    ),
+    action: import_zod.z.enum([
+      "NAVIGATE",
+      "OVERLAY",
+      "SWAP",
+      "SCROLL_TO",
+      "CHANGE_TO",
+      "BACK",
+      "CLOSE",
+      "URL"
+    ]).optional().describe("Action type (default: NAVIGATE)"),
+    destinationId: import_zod.z.string().optional().describe(
+      "Destination node ID, required for NAVIGATE, OVERLAY, SWAP, SCROLL_TO and CHANGE_TO"
+    ),
+    url: import_zod.z.string().url().optional().describe("URL to open, required for the URL action"),
+    openInNewTab: import_zod.z.boolean().optional().describe("Open URL in a new tab (URL action only, default true)"),
+    transition: import_zod.z.object({
+      type: import_zod.z.enum([
+        "INSTANT",
+        "DISSOLVE",
+        "SMART_ANIMATE",
+        "MOVE_IN",
+        "MOVE_OUT",
+        "PUSH",
+        "SLIDE_IN",
+        "SLIDE_OUT"
+      ]).describe("Transition type"),
+      direction: import_zod.z.enum(["LEFT", "RIGHT", "TOP", "BOTTOM"]).optional().describe(
+        "Direction, required for MOVE_IN, MOVE_OUT, PUSH, SLIDE_IN and SLIDE_OUT"
+      ),
+      duration: import_zod.z.number().positive().max(10).optional().describe("Duration in SECONDS (e.g. 0.3 = 300ms, default: 0.3)"),
+      easing: import_zod.z.enum([
+        "LINEAR",
+        "EASE_IN",
+        "EASE_OUT",
+        "EASE_IN_AND_OUT",
+        "GENTLE",
+        "QUICK",
+        "BOUNCY",
+        "SLOW"
+      ]).optional().describe("Easing curve (default: EASE_OUT)")
+    }).optional().describe("Transition for node actions (default: INSTANT)"),
+    preserveScrollPosition: import_zod.z.boolean().optional().describe("Keep the destination's scroll position (node actions only)"),
+    replace: import_zod.z.boolean().optional().describe(
+      "Replace all existing reactions instead of appending (default: false)"
+    )
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("add_interaction", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error adding interaction", error);
+    }
+  }
+);
+server.tool(
+  "set_reactions",
+  "Replace all prototype reactions of a node with raw Figma Plugin API Reaction objects ({ trigger, actions: [...] }). Use for advanced cases (e.g. SET_VARIABLE, CONDITIONAL, ON_KEY_DOWN). Trigger timeout/delay are in milliseconds, transition duration in seconds.",
+  {
+    nodeId: import_zod.z.string().describe("ID of the node"),
+    reactions: import_zod.z.array(import_zod.z.object({}).passthrough()).describe(
+      "Array of raw Reaction objects; an empty array removes all reactions"
+    )
+  },
+  async ({ nodeId, reactions }) => {
+    try {
+      const result = await sendCommandToFigma("set_reactions", {
+        nodeId,
+        reactions
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting reactions", error);
+    }
+  }
+);
+server.tool(
+  "remove_interactions",
+  "Remove prototype interactions from a node: all of them, or only those with a given trigger type",
+  {
+    nodeId: import_zod.z.string().describe("ID of the node"),
+    triggerType: interactionTriggerSchema.optional().describe("Optional trigger type to remove; omit to remove all")
+  },
+  async ({ nodeId, triggerType }) => {
+    try {
+      const result = await sendCommandToFigma("remove_interactions", {
+        nodeId,
+        triggerType
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error removing interactions", error);
+    }
+  }
+);
+server.tool(
+  "get_flow_starting_points",
+  "Get the prototype flow starting points of the current page",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_flow_starting_points");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting flow starting points", error);
+    }
+  }
+);
+server.tool(
+  "set_flow_starting_point",
+  "Add (or rename) a prototype flow starting point on a top-level frame",
+  {
+    nodeId: import_zod.z.string().describe("ID of the top-level frame where the flow starts"),
+    name: import_zod.z.string().describe("Flow name")
+  },
+  async ({ nodeId, name }) => {
+    try {
+      const result = await sendCommandToFigma("set_flow_starting_point", {
+        nodeId,
+        name
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting flow starting point", error);
+    }
+  }
+);
+server.tool(
+  "remove_flow_starting_point",
+  "Remove the prototype flow starting point of a frame",
+  {
+    nodeId: import_zod.z.string().describe("ID of the frame whose flow starting point should be removed")
+  },
+  async ({ nodeId }) => {
+    try {
+      const result = await sendCommandToFigma("remove_flow_starting_point", {
+        nodeId
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error removing flow starting point", error);
+    }
+  }
+);
+server.tool(
+  "set_overlay_settings",
+  "Read the overlay settings (position, background, close on click outside) of a frame used as an overlay. These properties are READ-ONLY in the Figma Plugin API: calling with any setting returns an error together with the current values; set them manually in Figma's Prototype panel.",
+  {
+    nodeId: import_zod.z.string().describe("ID of the frame used as overlay destination"),
+    position: import_zod.z.enum([
+      "CENTER",
+      "TOP_LEFT",
+      "TOP_CENTER",
+      "TOP_RIGHT",
+      "BOTTOM_LEFT",
+      "BOTTOM_CENTER",
+      "BOTTOM_RIGHT",
+      "MANUAL"
+    ]).optional().describe("Desired overlay position"),
+    background: import_zod.z.union([import_zod.z.literal("NONE"), import_zod.z.object({ color: rgbaSchema })]).optional().describe(
+      'Desired overlay background: "NONE" or { color: {r,g,b,a} } (0-1)'
+    ),
+    closeOnClickOutside: import_zod.z.boolean().optional().describe("Desired close-on-click-outside behavior")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("set_overlay_settings", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting overlay settings", error);
+    }
+  }
+);
+server.tool(
+  "set_scroll_behavior",
+  "Set prototype scrolling: overflowDirection on a frame, and/or make a child FIXED (fix position when scrolling) or SCROLLS. FIXED moves the node to the top of its parent's layer order (last child); in an auto-layout parent this also changes the node's position in the flow. SCROLLS moves a fixed node back to the top of the scrolling children. STICKY_SCROLLS is not supported by the Figma Plugin API and returns an error.",
+  {
+    nodeId: import_zod.z.string().describe(
+      "ID of the node (a frame for overflowDirection, a child of a frame for scrollBehavior)"
+    ),
+    overflowDirection: import_zod.z.enum(["NONE", "HORIZONTAL", "VERTICAL", "BOTH"]).optional().describe("Scroll direction of the frame's overflowing content"),
+    scrollBehavior: import_zod.z.enum(["SCROLLS", "FIXED", "STICKY_SCROLLS"]).optional().describe("Scroll behavior of the node inside its parent frame")
+  },
+  async ({ nodeId, overflowDirection, scrollBehavior }) => {
+    try {
+      const result = await sendCommandToFigma("set_scroll_behavior", {
+        nodeId,
+        overflowDirection,
+        scrollBehavior
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting scroll behavior", error);
+    }
+  }
+);
+server.tool(
+  "set_frame_properties",
+  "Set frame layout properties not covered by other tools: layoutPositioning (ABSOLUTE takes a child out of its auto-layout parent's flow, AUTO puts it back), itemReverseZIndex (auto-layout stacking: true = first child on top), clipsContent (clip overflowing children). x/y are applied last, so an ABSOLUTE child can be positioned in the same call.",
+  {
+    nodeId: import_zod.z.string().describe("ID of the frame, component, instance or child node"),
+    layoutPositioning: import_zod.z.enum(["AUTO", "ABSOLUTE"]).optional().describe("Position of the node inside its auto-layout parent"),
+    itemReverseZIndex: import_zod.z.boolean().optional().describe("Auto-layout frames only: true = first child drawn on top"),
+    clipsContent: import_zod.z.boolean().optional().describe("Whether the frame clips content outside its bounds"),
+    x: import_zod.z.number().optional().describe("X position relative to the parent"),
+    y: import_zod.z.number().optional().describe("Y position relative to the parent")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("set_frame_properties", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting frame properties", error);
+    }
+  }
+);
+var textStylePropsSchema = {
+  description: import_zod.z.string().optional().describe("Optional style description"),
+  fontFamily: import_zod.z.string().optional().describe("Font family (default: Inter, or the style's current family)"),
+  fontStyle: import_zod.z.string().optional().describe(
+    'Font style name as shown in Figma, e.g. "Regular", "Medium", "Semi Bold", "Bold". Takes precedence over fontWeight'
+  ),
+  fontWeight: import_zod.z.number().optional().describe(
+    "Font weight (100-900), mapped to a font style name when fontStyle is not given"
+  ),
+  fontSize: import_zod.z.number().positive().optional().describe("Font size in pixels"),
+  lineHeight: import_zod.z.union([
+    import_zod.z.number(),
+    import_zod.z.literal("AUTO"),
+    import_zod.z.object({
+      unit: import_zod.z.enum(["PIXELS", "PERCENT", "AUTO"]),
+      value: import_zod.z.number().optional()
+    })
+  ]).optional().describe(
+    'Line height: number (pixels), "AUTO", or { unit: "PIXELS" | "PERCENT", value }'
+  ),
+  letterSpacing: import_zod.z.union([
+    import_zod.z.number(),
+    import_zod.z.object({ unit: import_zod.z.enum(["PIXELS", "PERCENT"]), value: import_zod.z.number() })
+  ]).optional().describe(
+    'Letter spacing: number (pixels) or { unit: "PIXELS" | "PERCENT", value }'
+  ),
+  textCase: import_zod.z.enum([
+    "ORIGINAL",
+    "UPPER",
+    "LOWER",
+    "TITLE",
+    "SMALL_CAPS",
+    "SMALL_CAPS_FORCED"
+  ]).optional().describe("Text case"),
+  textDecoration: import_zod.z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).optional().describe("Text decoration"),
+  paragraphSpacing: import_zod.z.number().optional().describe("Paragraph spacing in pixels")
+};
+server.tool(
+  "create_text_style",
+  "Create a local text style (typography token). Use slashes in the name to group styles, e.g. 'Heading/H1'. Returns the style id for apply_text_style.",
+  {
+    name: import_zod.z.string().min(1).describe("Style name, e.g. 'Body/Medium 14'"),
+    ...textStylePropsSchema
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("create_text_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating text style", error);
+    }
+  }
+);
+server.tool(
+  "update_text_style",
+  "Update properties of an existing local text style. Text nodes using the style update automatically.",
+  {
+    styleId: import_zod.z.string().describe("ID of the text style (from get_styles or create_text_style)"),
+    name: import_zod.z.string().min(1).optional().describe("New style name"),
+    ...textStylePropsSchema
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("update_text_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error updating text style", error);
+    }
+  }
+);
+server.tool(
+  "apply_text_style",
+  "Apply a text style to one or more TEXT nodes (also works on text inside instances, e.g. 'I<instanceId>;<textId>'). Reports per-node success.",
+  {
+    styleId: import_zod.z.string().describe("ID of the text style to apply"),
+    nodeId: import_zod.z.string().optional().describe("ID of a single text node"),
+    nodeIds: import_zod.z.array(import_zod.z.string()).optional().describe("IDs of multiple text nodes")
+  },
+  async ({ styleId, nodeId, nodeIds }) => {
+    try {
+      const result = await sendCommandToFigma("apply_text_style", {
+        styleId,
+        nodeId,
+        nodeIds
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error applying text style", error);
+    }
+  }
+);
+server.tool(
+  "set_visible",
+  "Show or hide one or more nodes (also nodes inside instances, e.g. 'I<instanceId>;<childId>', which creates a visibility override). Reports per-node success.",
+  {
+    visible: import_zod.z.boolean().describe("true to show, false to hide"),
+    nodeId: import_zod.z.string().optional().describe("ID of a single node"),
+    nodeIds: import_zod.z.array(import_zod.z.string()).optional().describe("IDs of multiple nodes")
+  },
+  async ({ visible, nodeId, nodeIds }) => {
+    try {
+      const result = await sendCommandToFigma("set_visible", {
+        visible,
+        nodeId,
+        nodeIds
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting visibility", error);
+    }
+  }
+);
+server.tool(
+  "get_main_component",
+  "Return the main component (id, name, variant name and component set) of one or more INSTANCE nodes, read directly in the plugin (no REST API).",
+  {
+    nodeId: import_zod.z.string().optional().describe("ID of a single instance"),
+    nodeIds: import_zod.z.array(import_zod.z.string()).optional().describe("IDs of multiple instances")
+  },
+  async ({ nodeId, nodeIds }) => {
+    try {
+      const result = await sendCommandToFigma("get_main_component", {
+        nodeId,
+        nodeIds
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting main component", error);
+    }
+  }
+);
+server.tool(
+  "set_text_decoration",
+  "Set underline / strikethrough / none on one or more TEXT nodes (also text inside instances, e.g. 'I<instanceId>;<textId>'), optionally only for a character range [start, end). Reports per-node success.",
+  {
+    decoration: import_zod.z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).describe("Text decoration to apply"),
+    nodeId: import_zod.z.string().optional().describe("ID of a single text node"),
+    nodeIds: import_zod.z.array(import_zod.z.string()).optional().describe("IDs of multiple text nodes"),
+    start: import_zod.z.number().int().min(0).optional().describe("Optional start character index (inclusive)"),
+    end: import_zod.z.number().int().min(0).optional().describe("Optional end character index (exclusive)")
+  },
+  async ({ decoration, nodeId, nodeIds, start, end }) => {
+    try {
+      const result = await sendCommandToFigma("set_text_decoration", {
+        decoration,
+        nodeId,
+        nodeIds,
+        start,
+        end
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting text decoration", error);
+    }
+  }
+);
+server.tool(
+  "delete_style",
+  "Delete a local style (text, paint, effect or grid) by ID. Nodes using it keep their current values but are detached.",
+  {
+    styleId: import_zod.z.string().describe("ID of the style to delete")
+  },
+  async ({ styleId }) => {
+    try {
+      const result = await sendCommandToFigma("delete_style", { styleId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting style", error);
+    }
+  }
+);
+var effectsSchema = import_zod.z.array(
+  import_zod.z.object({
+    type: import_zod.z.enum([
+      "DROP_SHADOW",
+      "INNER_SHADOW",
+      "LAYER_BLUR",
+      "BACKGROUND_BLUR"
+    ]),
+    color: import_zod.z.object({
+      r: import_zod.z.number().min(0).max(1),
+      g: import_zod.z.number().min(0).max(1),
+      b: import_zod.z.number().min(0).max(1),
+      a: import_zod.z.number().min(0).max(1).optional()
+    }).optional().describe("Shadow color, RGBA 0-1 (default black 10%)"),
+    offset: import_zod.z.object({ x: import_zod.z.number(), y: import_zod.z.number() }).optional().describe("Shadow offset in pixels"),
+    radius: import_zod.z.number().min(0).optional().describe("Blur radius in pixels"),
+    spread: import_zod.z.number().optional().describe("Shadow spread in pixels"),
+    visible: import_zod.z.boolean().optional().describe("Whether the effect is visible (default true)"),
+    blendMode: import_zod.z.string().optional().describe("Blend mode (default NORMAL)"),
+    showShadowBehindNode: import_zod.z.boolean().optional().describe("Drop shadow only: show behind translucent fills")
+  })
+);
+server.tool(
+  "set_effects",
+  "Replace the effects (drop/inner shadows, layer/background blur) of a node. Pass an empty array to clear all effects.",
+  {
+    nodeId: import_zod.z.string().describe("ID of the node"),
+    effects: effectsSchema.describe("Effects to set on the node, in order")
+  },
+  async ({ nodeId, effects }) => {
+    try {
+      const result = await sendCommandToFigma("set_effects", {
+        nodeId,
+        effects
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting effects", error);
+    }
+  }
+);
+server.tool(
+  "create_effect_style",
+  "Create a local effect style (shadow/blur token), e.g. 'Shadow/lg'. Returns the style id for apply_effect_style.",
+  {
+    name: import_zod.z.string().min(1).describe("Style name, e.g. 'Shadow/md'"),
+    effects: effectsSchema.min(1).describe("Effects of the style, in order"),
+    description: import_zod.z.string().optional().describe("Style description")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("create_effect_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating effect style", error);
+    }
+  }
+);
+server.tool(
+  "update_effect_style",
+  "Update the name, description or effects of a local effect style. Nodes using the style update automatically.",
+  {
+    styleId: import_zod.z.string().describe(
+      "ID of the effect style (from get_styles or create_effect_style)"
+    ),
+    name: import_zod.z.string().min(1).optional().describe("New style name"),
+    effects: effectsSchema.optional().describe("New effects, replacing the old ones"),
+    description: import_zod.z.string().optional().describe("New description")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("update_effect_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error updating effect style", error);
+    }
+  }
+);
+server.tool(
+  "apply_effect_style",
+  "Apply an effect style to one or more nodes (frames, components, instances, shapes). Pass styleId '' to detach. Reports per-node success.",
+  {
+    styleId: import_zod.z.string().describe("ID of the effect style to apply, or '' to detach"),
+    nodeId: import_zod.z.string().optional().describe("ID of a single node"),
+    nodeIds: import_zod.z.array(import_zod.z.string()).optional().describe("IDs of multiple nodes")
+  },
+  async ({ styleId, nodeId, nodeIds }) => {
+    try {
+      const result = await sendCommandToFigma("apply_effect_style", {
+        styleId,
+        nodeId,
+        nodeIds
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error applying effect style", error);
+    }
+  }
+);
+var DESIGN_SPEC_NOTE = "Spec format: each node references shared values in `styles` by id (layout*, fill*, stroke*, effect*, text*). Layout values are CSS-like (flex, gap, padding, sizing fill/hug/fixed). `exportAs: svg` marks icons/vectors to export as assets instead of rebuilding them; `assets` lists icons and image fills to download with download_design_assets. `designStyles` and `variables` give design-token names to map onto the project's theme.";
+function formatRestVariableValue(value) {
+  if (value && typeof value === "object") {
+    if (value.type === "VARIABLE_ALIAS") return { aliasOf: value.id };
+    if ("r" in value && "g" in value && "b" in value) {
+      const r = Math.round(value.r * 255);
+      const g = Math.round(value.g * 255);
+      const b = Math.round(value.b * 255);
+      const a = value.a ?? 1;
+      return a >= 1 ? `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase()}` : `rgba(${r}, ${g}, ${b}, ${Math.round(a * 1e3) / 1e3})`;
+    }
+  }
+  return value;
+}
+async function loadRestVariables(token, fileKey) {
+  try {
+    const data = await getLocalVariables(token, fileKey);
+    const collections = data.meta?.variableCollections || {};
+    const out = {};
+    for (const [id, v] of Object.entries(data.meta?.variables || {})) {
+      const collection = collections[v.variableCollectionId];
+      const modeNames = {};
+      for (const m of collection?.modes || []) modeNames[m.modeId] = m.name;
+      const valuesByMode = {};
+      for (const [modeId, value] of Object.entries(v.valuesByMode || {})) {
+        valuesByMode[modeNames[modeId] || modeId] = formatRestVariableValue(value);
+      }
+      out[id] = {
+        name: v.name,
+        collection: collection?.name,
+        resolvedType: v.resolvedType,
+        valuesByMode
+      };
+    }
+    return out;
+  } catch (error) {
+    logger.debug(
+      `Variables endpoint unavailable: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return void 0;
+  }
+}
+function requireFigmaToken() {
+  const token = getFigmaToken();
+  if (!token) {
+    throw new Error(
+      "FIGMA_ACCESS_TOKEN is not set. Create a personal access token in Figma (Settings > Security > Personal access tokens, scope file_content:read) and pass it to the MCP server environment."
+    );
+  }
+  return token;
+}
+function resolveFileTarget(url, fileKey, nodeId) {
+  if (url) {
+    const parsed = parseFigmaUrl(url);
+    return {
+      fileKey: parsed.fileKey,
+      nodeIds: nodeId ? [normalizeNodeId(nodeId)] : parsed.nodeId ? [parsed.nodeId] : []
+    };
+  }
+  if (!fileKey) {
+    throw new Error("Provide either a Figma url or a fileKey");
+  }
+  return { fileKey, nodeIds: nodeId ? [normalizeNodeId(nodeId)] : [] };
+}
+server.tool(
+  "get_design_context",
+  `Read a Figma design from the open file through the plugin and return a compact, code-oriented spec (layout, styles, text, components, variables, assets) for generating UI code. Uses the given nodeIds or the current selection. ${DESIGN_SPEC_NOTE}`,
+  {
+    nodeIds: import_zod.z.array(import_zod.z.string()).optional().describe("Node IDs to read. Defaults to the current selection in Figma."),
+    maxDepth: import_zod.z.number().int().min(0).optional().describe("Maximum depth of children to include (default: unlimited)"),
+    includeHidden: import_zod.z.boolean().optional().describe("Include hidden layers (default: false)")
+  },
+  async ({ nodeIds, maxDepth, includeHidden }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_design_context",
+        { nodeIds },
+        6e4
+      );
+      const spec = simplifyBundles(result.bundles, {
+        maxDepth,
+        includeHidden,
+        variables: result.variables
+      });
+      return jsonResult({
+        source: "plugin",
+        fileName: result.fileName,
+        page: result.page,
+        ...spec
+      });
+    } catch (error) {
+      return errorResult("Error getting design context", error);
+    }
+  }
+);
+server.tool(
+  "get_figma_design_from_url",
+  `Read a Figma design through the Figma REST API (no plugin needed, requires FIGMA_ACCESS_TOKEN). Pass a Figma URL (figma.com/design/<fileKey>/...?node-id=1-2) or fileKey + nodeId. With a node it returns the code-oriented spec; without a node it returns the file outline (pages and top-level frames) so you can pick one. ${DESIGN_SPEC_NOTE}`,
+  {
+    url: import_zod.z.string().optional().describe("Figma file/design URL, optionally with ?node-id="),
+    fileKey: import_zod.z.string().optional().describe("Figma file key (alternative to url)"),
+    nodeId: import_zod.z.string().optional().describe("Node ID such as 1:2 or 1-2 (overrides node-id in url)"),
+    maxDepth: import_zod.z.number().int().min(0).optional().describe("Maximum depth of children to include (default: unlimited)"),
+    includeHidden: import_zod.z.boolean().optional().describe("Include hidden layers (default: false)")
+  },
+  async ({ url, fileKey, nodeId, maxDepth, includeHidden }) => {
+    try {
+      const token = requireFigmaToken();
+      const target = resolveFileTarget(url, fileKey, nodeId);
+      if (target.nodeIds.length === 0) {
+        const file = await getFileOutline(token, target.fileKey, 2);
+        const pages = (file.document?.children || []).map((page) => ({
+          id: page.id,
+          name: page.name,
+          frames: (page.children || []).map((n) => ({
+            id: n.id,
+            name: n.name,
+            type: n.type
+          }))
+        }));
+        return jsonResult({
+          source: "rest",
+          fileKey: target.fileKey,
+          fileName: file.name,
+          lastModified: file.lastModified,
+          pages,
+          hint: "Call again with nodeId of the frame to convert into code."
+        });
+      }
+      const data = await getFileNodes(
+        token,
+        target.fileKey,
+        target.nodeIds,
+        maxDepth !== void 0 ? maxDepth + 1 : void 0
+      );
+      const bundles = target.nodeIds.map((id) => {
+        const entry = data.nodes?.[id];
+        if (!entry || !entry.document) {
+          throw new Error(`Node ${id} not found in file ${target.fileKey}`);
+        }
+        return entry;
+      });
+      const variables = await loadRestVariables(token, target.fileKey);
+      const spec = simplifyBundles(bundles, {
+        maxDepth,
+        includeHidden,
+        variables
+      });
+      return jsonResult({
+        source: "rest",
+        fileKey: target.fileKey,
+        fileName: data.name,
+        lastModified: data.lastModified,
+        ...spec
+      });
+    } catch (error) {
+      return errorResult("Error reading Figma design", error);
+    }
+  }
+);
+var assetItemSchema = import_zod.z.object({
+  nodeId: import_zod.z.string().optional().describe("Node ID to render (icons, illustrations, frames)"),
+  imageRef: import_zod.z.string().optional().describe("imageRef of an image fill (from spec.assets.images) to download the original bitmap"),
+  fileName: import_zod.z.string().describe("File name to write, e.g. 'arrow-left.svg' or 'hero.png' (no directories)"),
+  format: import_zod.z.enum(["svg", "png", "jpg", "pdf"]).optional().describe("Render format for nodeId (default: from file extension, else png)"),
+  scale: import_zod.z.number().positive().max(4).optional().describe("Scale for png/jpg renders (default: 2)")
+});
+function safeAssetPath(dir, fileName) {
+  const base = import_path.default.basename(fileName);
+  if (!base || base !== fileName || base === "." || base === "..") {
+    throw new Error(`Invalid fileName "${fileName}": use a plain file name without directories`);
+  }
+  return import_path.default.join(dir, base);
+}
+function inferFormat(item) {
+  if (item.format) return item.format;
+  const ext = import_path.default.extname(item.fileName).slice(1).toLowerCase();
+  if (ext === "svg" || ext === "png" || ext === "pdf") return ext;
+  if (ext === "jpg" || ext === "jpeg") return "jpg";
+  return "png";
+}
+server.tool(
+  "download_design_assets",
+  "Download icons, illustrations and image fills from a Figma design into a local folder so generated code can reference them. Use source 'plugin' for designs read with get_design_context, or 'rest' (with url/fileKey) for designs read with get_figma_design_from_url.",
+  {
+    source: import_zod.z.enum(["plugin", "rest"]).describe("Where to read the assets from"),
+    url: import_zod.z.string().optional().describe("Figma URL (rest source)"),
+    fileKey: import_zod.z.string().optional().describe("Figma file key (rest source)"),
+    localPath: import_zod.z.string().describe("Directory to write files to (absolute, or relative to the MCP server working directory). Created if missing."),
+    items: import_zod.z.array(assetItemSchema).min(1).max(50)
+  },
+  async ({ source, url, fileKey, localPath, items }) => {
+    try {
+      const dir = import_path.default.resolve(process.cwd(), localPath);
+      for (const item of items) {
+        if (!item.nodeId && !item.imageRef) {
+          throw new Error(`Item "${item.fileName}" needs nodeId or imageRef`);
+        }
+        safeAssetPath(dir, item.fileName);
+      }
+      await (0, import_promises.mkdir)(dir, { recursive: true });
+      const written = [];
+      if (source === "plugin") {
+        const result = await sendCommandToFigma(
+          "export_node_assets",
+          {
+            items: items.map((item) => ({
+              nodeId: item.nodeId,
+              imageRef: item.imageRef,
+              format: item.imageRef ? void 0 : inferFormat(item).toUpperCase(),
+              scale: item.scale ?? 2
+            }))
+          },
+          12e4
+        );
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const res = result.results[i];
+          if (!res || !res.success || !res.data) {
+            written.push({ fileName: item.fileName, error: res?.error || "Export failed" });
+            continue;
+          }
+          const filePath = safeAssetPath(dir, item.fileName);
+          await (0, import_promises.writeFile)(filePath, Buffer.from(res.data, "base64"));
+          written.push({ fileName: item.fileName, path: filePath });
+        }
+      } else {
+        const token = requireFigmaToken();
+        const target = resolveFileTarget(url, fileKey);
+        const renderUrls = {};
+        const groups = /* @__PURE__ */ new Map();
+        for (const item of items.filter((i) => i.nodeId && !i.imageRef)) {
+          const format = inferFormat(item);
+          const scale = format === "svg" ? 1 : item.scale ?? 2;
+          const key = `${format}@${scale}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(item);
+        }
+        for (const [key, groupItems] of groups) {
+          const [format, scale] = key.split("@");
+          const urls = await getImageRenderUrls(
+            token,
+            target.fileKey,
+            groupItems.map((i) => normalizeNodeId(i.nodeId)),
+            format,
+            Number(scale)
+          );
+          for (const i of groupItems) {
+            renderUrls[i.fileName] = urls[normalizeNodeId(i.nodeId)] ?? null;
+          }
+        }
+        const needsFills = items.some((i) => i.imageRef);
+        const fillUrls = needsFills ? await getImageFillUrls(token, target.fileKey) : {};
+        for (const item of items) {
+          try {
+            const sourceUrl = item.imageRef ? fillUrls[item.imageRef] : renderUrls[item.fileName];
+            if (!sourceUrl) {
+              throw new Error(
+                item.imageRef ? `No image found for imageRef ${item.imageRef}` : `Figma could not render node ${item.nodeId}`
+              );
+            }
+            const bytes = await downloadBytes(sourceUrl);
+            const filePath = safeAssetPath(dir, item.fileName);
+            await (0, import_promises.writeFile)(filePath, bytes);
+            written.push({ fileName: item.fileName, path: filePath });
+          } catch (error) {
+            written.push({
+              fileName: item.fileName,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+      }
+      return jsonResult({
+        directory: dir,
+        saved: written.filter((w) => w.path).length,
+        failed: written.filter((w) => w.error).length,
+        files: written
+      });
+    } catch (error) {
+      return errorResult("Error downloading design assets", error);
+    }
+  }
+);
+server.prompt(
+  "design_to_code",
+  "Workflow for turning a Figma design into code",
+  () => {
+    return {
+      messages: [
+        {
+          role: "assistant",
+          content: {
+            type: "text",
+            text: `When generating code from a Figma design:
+
+1. Read the design:
+   - Figma open with the plugin connected: join_channel, then get_design_context (uses the selection, or pass nodeIds).
+   - Only a Figma link: get_figma_design_from_url with the url (needs FIGMA_ACCESS_TOKEN). Without node-id it returns the page/frame outline first.
+   - For large screens, read with maxDepth first, then read child nodes separately.
+2. Look at the design: export_node_as_image (plugin) for a visual reference to compare against.
+3. Follow the project, not Figma: reuse existing components, theme tokens, and the styling approach already in the codebase. Map designStyles/variables names to existing tokens before writing raw values.
+4. Translate the spec:
+   - layout display/flexDirection/gap/padding \u2192 flexbox; sizing fill \u2192 flex: 1 / width: 100%, hug \u2192 auto, fixed \u2192 explicit size.
+   - position: absolute only where the spec says so (non auto-layout parents).
+   - INSTANCE nodes with component.name \u2192 reuse/create one component per main component, props from component.properties.
+   - richText segments \u2192 nested inline elements.
+5. Assets: nodes with exportAs: svg and spec.assets.images \u2192 download_design_assets into the project's asset folder; never redraw icons with divs.
+6. Verify: build/lint the project and compare the result with the exported image.`
+          }
+        }
+      ],
+      description: "Workflow for turning a Figma design into code"
+    };
   }
 );
 server.tool(
@@ -2808,7 +4308,9 @@ async function main() {
   try {
     connectToFigma();
   } catch (error) {
-    logger.warn(`Could not connect to Figma initially: ${error instanceof Error ? error.message : String(error)}`);
+    logger.warn(
+      `Could not connect to Figma initially: ${error instanceof Error ? error.message : String(error)}`
+    );
     logger.warn("Will try to connect when the first command is sent");
   }
   const transport = new import_stdio.StdioServerTransport();
@@ -2816,7 +4318,9 @@ async function main() {
   logger.info("FigmaMCP server running on stdio");
 }
 main().catch((error) => {
-  logger.error(`Error starting FigmaMCP server: ${error instanceof Error ? error.message : String(error)}`);
+  logger.error(
+    `Error starting FigmaMCP server: ${error instanceof Error ? error.message : String(error)}`
+  );
   process.exit(1);
 });
 //# sourceMappingURL=server.cjs.map

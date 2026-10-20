@@ -1,8 +1,9 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "cursor-talk-to-figma-mcp",
+      "name": "opencode-figma-mcp",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.13.1",
         "uuid": "latest",
