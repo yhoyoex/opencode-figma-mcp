@@ -144,6 +144,8 @@ powershell -c "irm bun.sh/install.ps1|iex"
 HOST=0.0.0.0 bun socket
 ```
 
+Set `RELAY_DEBUG=1` untuk mencetak payload lengkap ke log relay (default mati).
+
 ## Usage
 
 1. Start the WebSocket server
