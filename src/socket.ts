@@ -6,6 +6,7 @@ import WebSocket, { WebSocketServer } from "ws";
 const PORT = Number(process.env.PORT) || 3055;
 // localhost only; set HOST=0.0.0.0 to allow connections from Windows WSL
 const HOST = process.env.HOST || "127.0.0.1";
+const DEBUG = process.env.RELAY_DEBUG === "1";
 
 // Store clients by channel
 const channels = new Map<string, Set<WebSocket>>();
@@ -32,7 +33,8 @@ function handleMessage(ws: WebSocket, raw: string) {
   } else if (data.message?.result) {
     console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
   }
-  console.log(`Full message:`, JSON.stringify(data, null, 2));
+  // Full payloads can be MBs (node trees); only dump them when RELAY_DEBUG=1
+  if (DEBUG) console.log(`Full message:`, JSON.stringify(data, null, 2));
 
   if (data.type === "join") {
     const channelName = data.channel;
@@ -99,8 +101,10 @@ function handleMessage(ws: WebSocket, raw: string) {
       sender: "peer",
       channel: channelName
     };
-    console.log(`\n=== Broadcasting ===`);
-    console.log(JSON.stringify(broadcastMessage, null, 2));
+    if (DEBUG) {
+      console.log(`\n=== Broadcasting ===`);
+      console.log(JSON.stringify(broadcastMessage, null, 2));
+    }
     const broadcastCount = sendToPeers(channelName, ws, broadcastMessage);
 
     if (broadcastCount === 0) {
