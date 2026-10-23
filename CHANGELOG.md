@@ -7,6 +7,7 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
 ### Fixed
 
 - Instalasi langsung dari GitHub (`npx -p github:yhoyoex/opencode-figma-mcp opencode-figma-relay`) kini menyertakan relay; sebelumnya gagal dengan `command not found` karena paket tidak dibangun saat diinstal.
+- Relay tidak lagi mencetak payload lengkap ke log kecuali `RELAY_DEBUG=1`; log sebelumnya bisa membengkak puluhan GB karena node tree Figma berukuran MB.
 
 ## [1.1.1] - 2026-10-20
 
