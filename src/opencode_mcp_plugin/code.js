@@ -86,6 +86,9 @@ figma.ui.onmessage = async (msg) => {
     case "close-plugin":
       figma.closePlugin();
       break;
+    case "save-channel":
+      saveChannel(msg.channel);
+      break;
     case "execute-command":
       // Execute commands received from UI (which gets them from WebSocket)
       try {
@@ -108,8 +111,33 @@ figma.ui.onmessage = async (msg) => {
 
 // Listen for plugin commands from menu
 figma.on("run", ({ command }) => {
-  figma.ui.postMessage({ type: "auto-connect" });
+  figma.ui.postMessage({ type: "auto-connect", channel: loadChannel() });
 });
+
+// The channel is stored per file so a restarted plugin rejoins the channel the
+// MCP server already joined, and two open files never share a channel.
+const CHANNEL_KEY = "mcpChannel";
+
+function loadChannel() {
+  try {
+    const channel = figma.root.getPluginData(CHANNEL_KEY);
+    return /^[a-z0-9]{8}$/.test(channel) ? channel : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function saveChannel(channel) {
+  if (typeof channel !== "string" || !/^[a-z0-9]{8}$/.test(channel)) return;
+  try {
+    if (figma.root.getPluginData(CHANNEL_KEY) !== channel) {
+      figma.root.setPluginData(CHANNEL_KEY, channel);
+    }
+  } catch (error) {
+    // read-only files (view access) cannot store plugin data; keep the session channel
+    console.warn("Could not persist channel:", error);
+  }
+}
 
 // Update plugin settings
 function updateSettings(settings) {
@@ -5517,7 +5545,7 @@ async function resolveVariablesForDesign(ids) {
 }
 
 async function getDesignContext(params) {
-  const { nodeIds } = params || {};
+  const { nodeIds, maxDepth, includeHidden, commandId } = params || {};
   let nodes;
   if (Array.isArray(nodeIds) && nodeIds.length > 0) {
     nodes = [];
@@ -5537,21 +5565,48 @@ async function getDesignContext(params) {
     }
   }
 
+  const pruneOptions = {
+    maxDepth: Number.isInteger(maxDepth) && maxDepth >= 0 ? maxDepth : undefined,
+    includeHidden: includeHidden === true,
+  };
   const bundles = [];
   const aliasIds = new Set();
-  for (const node of nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
     if (!("exportAsync" in node)) {
       throw new Error(`Node cannot be exported: ${node.id} (${node.type})`);
     }
+    // Progress resets the MCP server timeout and yields between heavy exports
+    await sendProgressUpdate(
+      commandId,
+      "get_design_context",
+      i === 0 ? "started" : "in_progress",
+      Math.round((i / nodes.length) * 100),
+      nodes.length,
+      i,
+      `Exporting ${node.name} (${i + 1}/${nodes.length})`,
+    );
     const response = await node.exportAsync({ format: "JSON_REST_V1" });
-    collectVariableAliasIds(response.document, aliasIds);
+    // Shrink the payload before it is cloned to the UI and sent over the socket
+    const document = pruneDesignNode(response.document, 0, pruneOptions);
+    collectVariableAliasIds(document, aliasIds);
     bundles.push({
-      document: response.document,
+      document: document,
       components: response.components,
       componentSets: response.componentSets,
       styles: response.styles,
     });
   }
+
+  await sendProgressUpdate(
+    commandId,
+    "get_design_context",
+    "completed",
+    100,
+    nodes.length,
+    nodes.length,
+    `Exported ${nodes.length} node(s)`,
+  );
 
   return {
     fileName: figma.root.name,
@@ -5559,6 +5614,36 @@ async function getDesignContext(params) {
     bundles: bundles,
     variables: await resolveVariablesForDesign(aliasIds),
   };
+}
+
+// Nodes the server's simplifier never renders (hidden ones, or ones deeper than
+// maxDepth) are reduced to the fields it still inspects for icon detection and
+// childrenTruncated: type, visibility, fills, layoutMode and children.
+function pruneDesignNode(node, depth, options) {
+  if (!node || typeof node !== "object") return node;
+  const skeleton =
+    (node.visible === false && !options.includeHidden) ||
+    (options.maxDepth !== undefined && depth > options.maxDepth);
+  if (skeleton) return skeletonDesignNode(node);
+  if (!Array.isArray(node.children)) return node;
+  const pruned = Object.assign({}, node);
+  pruned.children = node.children.map((child) =>
+    pruneDesignNode(child, depth + 1, options),
+  );
+  return pruned;
+}
+
+function skeletonDesignNode(node) {
+  const out = { id: node.id, type: node.type };
+  if (node.visible === false) out.visible = false;
+  if (node.layoutMode) out.layoutMode = node.layoutMode;
+  if (Array.isArray(node.fills)) {
+    out.fills = node.fills.map((p) => ({ type: p.type, visible: p.visible }));
+  }
+  if (Array.isArray(node.children)) {
+    out.children = node.children.map(skeletonDesignNode);
+  }
+  return out;
 }
 
 async function exportNodeAssets(params) {

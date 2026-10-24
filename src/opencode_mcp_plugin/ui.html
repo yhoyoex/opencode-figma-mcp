@@ -389,7 +389,14 @@
         pendingRequests: new Map(),
         channel: null,
         commandTracking: new Map(),
+        // Auto-reconnect bookkeeping; manualDisconnect stops it after the user clicks Disconnect
+        manualDisconnect: false,
+        reconnectAttempts: 0,
+        reconnectTimer: null,
       };
+
+      const RECONNECT_BASE_MS = 1000;
+      const RECONNECT_MAX_MS = 15000;
 
       // --- Anonymous analytics (GA4 Measurement Protocol) ---
       const analytics = (() => {
@@ -517,24 +524,30 @@
       // Connect to WebSocket server
       async function connectToServer(port) {
         try {
-          if (state.connected && state.socket) {
-            updateConnectionStatus(true, "Already connected to server");
+          if (state.socket) {
+            if (state.connected) {
+              updateConnectionStatus(true, "Already connected to server");
+            }
             return;
           }
 
+          clearReconnectTimer();
+          state.manualDisconnect = false;
           state.serverPort = port;
           const wsUrl = `ws://localhost:${port}`;
 
-          state.socket = new WebSocket(wsUrl);
+          const socket = new WebSocket(wsUrl);
+          state.socket = socket;
 
-          state.socket.onopen = () => {
-            // Generate random channel name
-            const channelName = generateChannelName();
+          socket.onopen = () => {
+            // Reuse the channel across reconnects so the MCP server stays joined
+            if (!state.channel) {
+              state.channel = generateChannelName();
+            }
+            const channelName = state.channel;
             console.log("Joining channel:", channelName);
-            state.channel = channelName;
 
-            // Join the channel using the same format as App.tsx
-            state.socket.send(
+            socket.send(
               JSON.stringify({
                 type: "join",
                 channel: channelName.trim(),
@@ -542,7 +555,7 @@
             );
           };
 
-          state.socket.onmessage = (event) => {
+          socket.onmessage = (event) => {
             try {
               const data = JSON.parse(event.data);
               console.log("Received message:", data);
@@ -551,6 +564,7 @@
                 // Successfully joined channel
                 if (data.message && data.message.result) {
                   state.connected = true;
+                  state.reconnectAttempts = 0;
                   const channelName = data.channel;
                   updateConnectionStatus(
                     true,
@@ -560,6 +574,12 @@
                     port: state.serverPort,
                     channel: channelName,
                   });
+
+                  // Persist the channel so a restarted plugin rejoins the same one
+                  parent.postMessage(
+                    { pluginMessage: { type: "save-channel", channel: channelName } },
+                    "*"
+                  );
 
                   // Notify the plugin code
                   parent.postMessage(
@@ -575,7 +595,7 @@
               } else if (data.type === "error") {
                 console.error("Error:", data.message);
                 updateConnectionStatus(false, `Error: ${data.message}`);
-                state.socket.close();
+                socket.close();
               }
 
               handleSocketMessage(data);
@@ -584,35 +604,70 @@
             }
           };
 
-          state.socket.onclose = () => {
+          socket.onclose = () => {
+            // Ignore events from a socket that has already been replaced
+            if (state.socket !== socket) return;
             state.connected = false;
             state.socket = null;
-            updateConnectionStatus(false, "Disconnected from server");
+            if (state.manualDisconnect) {
+              updateConnectionStatus(false, "Disconnected from server");
+              return;
+            }
+            scheduleReconnect();
           };
 
-          state.socket.onerror = (error) => {
+          socket.onerror = (error) => {
+            // onclose always follows and handles cleanup/reconnect
             console.error("WebSocket error:", error);
-            updateConnectionStatus(false, "Connection error");
-            state.connected = false;
-            state.socket = null;
           };
         } catch (error) {
           console.error("Connection error:", error);
+          state.socket = null;
           updateConnectionStatus(
             false,
             `Connection error: ${error.message || "Unknown error"}`
           );
+          scheduleReconnect();
         }
+      }
+
+      function clearReconnectTimer() {
+        if (state.reconnectTimer) {
+          clearTimeout(state.reconnectTimer);
+          state.reconnectTimer = null;
+        }
+      }
+
+      // Reconnect with exponential backoff until the user disconnects manually
+      function scheduleReconnect() {
+        if (state.manualDisconnect || state.reconnectTimer) return;
+        const delay = Math.min(
+          RECONNECT_BASE_MS * Math.pow(2, state.reconnectAttempts),
+          RECONNECT_MAX_MS
+        );
+        state.reconnectAttempts++;
+        updateConnectionStatus(
+          false,
+          `Connection lost. Reconnecting in ${Math.round(delay / 1000)}s (attempt ${state.reconnectAttempts})...`
+        );
+        state.reconnectTimer = setTimeout(() => {
+          state.reconnectTimer = null;
+          connectToServer(state.serverPort);
+        }, delay);
       }
 
       // Disconnect from websocket server
       function disconnectFromServer() {
+        state.manualDisconnect = true;
+        state.reconnectAttempts = 0;
+        clearReconnectTimer();
         if (state.socket) {
-          state.socket.close();
+          const socket = state.socket;
           state.socket = null;
-          state.connected = false;
-          updateConnectionStatus(false, "Disconnected from server");
+          socket.close();
         }
+        state.connected = false;
+        updateConnectionStatus(false, "Disconnected from server");
       }
 
       // Handle messages from the WebSocket
@@ -880,6 +935,9 @@
             updateConnectionStatus(message.connected, message.message);
             break;
           case "auto-connect":
+            if (message.channel && !state.channel) {
+              state.channel = message.channel;
+            }
             connectButton.click();
             break;
           case "auto-disconnect":

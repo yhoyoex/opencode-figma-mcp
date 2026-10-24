@@ -8,6 +8,11 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
 
 - Instalasi langsung dari GitHub (`npx -p github:yhoyoex/opencode-figma-mcp opencode-figma-relay`) kini menyertakan relay; sebelumnya gagal dengan `command not found` karena paket tidak dibangun saat diinstal.
 - Relay tidak lagi mencetak payload lengkap ke log kecuali `RELAY_DEBUG=1`; log sebelumnya bisa membengkak puluhan GB karena node tree Figma berukuran MB.
+- Plugin Figma kini menyambung ulang sendiri saat koneksi ke relay putus (jeda bertahap 1–15 detik); sebelumnya plugin diam di status "Disconnected" sampai tombol Connect ditekan.
+- Plugin memakai channel yang sama per file Figma, juga setelah reconnect atau plugin dibuka ulang, sehingga agent tidak perlu `join_channel` lagi.
+- Server MCP otomatis bergabung kembali ke channel terakhir setelah relay di-restart.
+- Relay mengirim ping setiap 30 detik dan memutus koneksi yang tidak merespons, sehingga plugin yang sudah mati tidak lagi tertinggal di channel.
+- `get_design_context` mengirim data lebih kecil dari plugin (layer tersembunyi dan layer di bawah `maxDepth` dipangkas sebelum dikirim) dan mengirim progres per node, sehingga beban plugin dan socket untuk frame besar berkurang. Hasil spec tidak berubah.
 
 ## [1.1.1] - 2026-10-20
 
