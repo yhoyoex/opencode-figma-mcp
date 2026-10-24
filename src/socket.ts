@@ -147,9 +147,28 @@ const httpServer = createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 
+// Protocol-level ping keeps idle connections open and drops peers that stopped
+// answering (e.g. a Figma plugin that was killed without a clean close)
+const HEARTBEAT_MS = 30000;
+const alive = new WeakMap<WebSocket, boolean>();
+const heartbeat = setInterval(() => {
+  wss.clients.forEach((client) => {
+    if (alive.get(client) === false) {
+      console.log("Terminating unresponsive client");
+      client.terminate();
+      return;
+    }
+    alive.set(client, false);
+    client.ping();
+  });
+}, HEARTBEAT_MS);
+wss.on("close", () => clearInterval(heartbeat));
+
 wss.on("connection", (ws) => {
   // Don't add to clients immediately - wait for channel join
   console.log("New client connected");
+  alive.set(ws, true);
+  ws.on("pong", () => alive.set(ws, true));
 
   // Send welcome message to the new client
   ws.send(JSON.stringify({

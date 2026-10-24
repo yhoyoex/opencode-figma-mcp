@@ -89,6 +89,7 @@ const pendingRequests = new Map<
 
 // Track which channel each client is in
 let currentChannel: string | null = null;
+let lastJoinedChannel: string | null = null;
 
 // Create MCP server
 const server = new McpServer({
@@ -3308,6 +3309,13 @@ function connectToFigma(port: number = 3055) {
     logger.info("Connected to Figma socket server");
     // Reset channel on new connection
     currentChannel = null;
+    // Rejoin the previous channel so a relay restart does not need a manual join_channel
+    if (lastJoinedChannel) {
+      const channel = lastJoinedChannel;
+      joinChannel(channel).catch(() => {
+        // joinChannel already logs the failure
+      });
+    }
   });
 
   ws.on("message", (data: any) => {
@@ -3465,6 +3473,7 @@ async function joinChannel(channelName: string): Promise<void> {
   try {
     await sendCommandToFigma("join", { channel: channelName });
     currentChannel = channelName;
+    lastJoinedChannel = channelName;
     logger.info(`Joined channel: ${channelName}`);
   } catch (error) {
     logger.error(
@@ -4937,7 +4946,7 @@ server.tool(
     try {
       const result = (await sendCommandToFigma(
         "get_design_context",
-        { nodeIds },
+        { nodeIds, maxDepth, includeHidden },
         60000,
       )) as {
         fileName: string;

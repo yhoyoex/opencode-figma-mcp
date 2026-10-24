@@ -536,6 +536,7 @@ var logger = {
 var ws = null;
 var pendingRequests = /* @__PURE__ */ new Map();
 var currentChannel = null;
+var lastJoinedChannel = null;
 var server = new import_mcp.McpServer({
   name: "opencode-figma-mcp",
   version: "1.1.1"
@@ -2829,6 +2830,11 @@ function connectToFigma(port = 3055) {
   ws.on("open", () => {
     logger.info("Connected to Figma socket server");
     currentChannel = null;
+    if (lastJoinedChannel) {
+      const channel = lastJoinedChannel;
+      joinChannel(channel).catch(() => {
+      });
+    }
   });
   ws.on("message", (data) => {
     try {
@@ -2929,6 +2935,7 @@ async function joinChannel(channelName) {
   try {
     await sendCommandToFigma("join", { channel: channelName });
     currentChannel = channelName;
+    lastJoinedChannel = channelName;
     logger.info(`Joined channel: ${channelName}`);
   } catch (error) {
     logger.error(
@@ -4042,7 +4049,7 @@ server.tool(
     try {
       const result = await sendCommandToFigma(
         "get_design_context",
-        { nodeIds },
+        { nodeIds, maxDepth, includeHidden },
         6e4
       );
       const spec = simplifyBundles(result.bundles, {
