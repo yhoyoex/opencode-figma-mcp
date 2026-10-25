@@ -52,15 +52,28 @@ export function normalizeNodeId(nodeId: string): string {
 }
 
 async function figmaGet(path: string, token: string): Promise<any> {
+  return figmaRequest("GET", path, token);
+}
+
+async function figmaRequest(
+  method: "GET" | "POST",
+  path: string,
+  token: string,
+  body?: unknown,
+): Promise<any> {
+  const headers: Record<string, string> = { "X-Figma-Token": token };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "X-Figma-Token": token },
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const body = await res.text();
+  const text = await res.text();
   if (!res.ok) {
-    let detail = body;
+    let detail = text;
     try {
-      const parsed = JSON.parse(body);
-      detail = parsed.err || parsed.message || body;
+      const parsed = JSON.parse(text);
+      detail = parsed.err || parsed.message || text;
     } catch {
       // keep raw body
     }
@@ -70,9 +83,11 @@ async function figmaGet(path: string, token: string): Promise<any> {
         : res.status === 429
           ? " (Figma rate limit reached, try again later)"
           : "";
-    throw new Error(`Figma API ${res.status}: ${detail}${hint}`);
+    const shortDetail =
+      String(detail).length > 500 ? `${String(detail).slice(0, 500)}…` : detail;
+    throw new Error(`Figma API ${res.status}: ${shortDetail}${hint}`);
   }
-  return JSON.parse(body);
+  return JSON.parse(text);
 }
 
 export async function getFileNodes(
@@ -112,6 +127,78 @@ export async function getImageFillUrls(token: string, fileKey: string): Promise<
 // Local variables endpoint is Enterprise-only; callers should treat failure as non-fatal.
 export async function getLocalVariables(token: string, fileKey: string): Promise<any> {
   return figmaGet(`/files/${encodeURIComponent(fileKey)}/variables/local`, token);
+}
+
+export async function getFileComments(token: string, fileKey: string): Promise<any> {
+  return figmaGet(`/files/${encodeURIComponent(fileKey)}/comments`, token);
+}
+
+export interface PostCommentBody {
+  message: string;
+  comment_id?: string;
+  client_meta?: { node_id: string; node_offset: { x: number; y: number } };
+}
+
+export async function postFileComment(
+  token: string,
+  fileKey: string,
+  body: PostCommentBody,
+): Promise<any> {
+  return figmaRequest("POST", `/files/${encodeURIComponent(fileKey)}/comments`, token, body);
+}
+
+export interface FileVersionsPage {
+  pageSize?: number;
+  before?: number;
+  after?: number;
+}
+
+export async function getFileVersions(
+  token: string,
+  fileKey: string,
+  page: FileVersionsPage = {},
+): Promise<any> {
+  const params = new URLSearchParams();
+  if (page.pageSize !== undefined) params.set("page_size", String(page.pageSize));
+  if (page.before !== undefined) params.set("before", String(page.before));
+  if (page.after !== undefined) params.set("after", String(page.after));
+  const query = params.toString();
+  return figmaGet(
+    `/files/${encodeURIComponent(fileKey)}/versions${query ? `?${query}` : ""}`,
+    token,
+  );
+}
+
+export interface TeamLibraryPage {
+  pageSize?: number;
+  after?: number;
+}
+
+function teamLibraryQuery(page: TeamLibraryPage): string {
+  const params = new URLSearchParams();
+  if (page.pageSize !== undefined) params.set("page_size", String(page.pageSize));
+  if (page.after !== undefined) params.set("after", String(page.after));
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export async function getTeamComponents(
+  token: string,
+  teamId: string,
+  page: TeamLibraryPage = {},
+): Promise<any> {
+  return figmaGet(
+    `/teams/${encodeURIComponent(teamId)}/components${teamLibraryQuery(page)}`,
+    token,
+  );
+}
+
+export async function getTeamStyles(
+  token: string,
+  teamId: string,
+  page: TeamLibraryPage = {},
+): Promise<any> {
+  return figmaGet(`/teams/${encodeURIComponent(teamId)}/styles${teamLibraryQuery(page)}`, token);
 }
 
 export async function downloadBytes(url: string): Promise<Uint8Array> {

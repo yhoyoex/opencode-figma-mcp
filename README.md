@@ -3,7 +3,7 @@
 **OpenCode Figma MCP** is a Model Context Protocol (MCP) server that connects AI coding agents — [OpenCode](https://opencode.ai) and Claude Code — to Figma. It works in both directions:
 
 - **Design → Code**: read a frame, component, or a Figma URL and get a compact, code-oriented spec (layout, auto-layout, typography, colors, effects, variables, component props) plus downloadable SVG/PNG assets, so the agent can generate UI code that matches the design.
-- **Code → Design**: create and edit Figma content from the agent — frames, shapes, text, auto-layout, components, instances, variables, annotations, prototypes, and more (109 tools).
+- **Code → Design**: create and edit Figma content from the agent — frames, shapes, text, auto-layout, components, instances, variables, annotations, prototypes, and more (133 tools).
 
 ```
 OpenCode / Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ Relay (localhost:3055) ←(WebSocket)→ Figma Plugin
@@ -197,8 +197,8 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `get_document_info` - Get information about the current Figma document
 - `get_selection` - Get information about the current selection
 - `read_my_design` - Get detailed node information about the current selection without parameters
-- `get_node_info` - Get detailed information about a specific node
-- `get_nodes_info` - Get detailed information about multiple nodes by providing an array of node IDs
+- `get_node_info` - Get detailed information about a specific node (`detail: "full"` adds visibility/opacity, constraints, effects, style ids, bound variables, component properties, auto-layout & sizing fields and stroke details)
+- `get_nodes_info` - Get detailed information about multiple nodes by providing an array of node IDs (also supports `detail: "full"`)
 - `set_focus` - Set focus on a specific node by selecting it and scrolling viewport to it
 - `set_selections` - Set selection to multiple nodes and scroll viewport to show them
 
@@ -229,24 +229,27 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `create_rectangle` - Create a new rectangle with position, size, and optional name
 - `create_frame` - Create a new frame with position, size, and optional name
 - `create_section` - Create a section to group related content on the canvas
-- `create_text` - Create a new text node with customizable font properties
+- `create_text` - Create a new text node with customizable font properties (`fontFamily`/`fontStyle`; see `get_available_fonts`)
 - `create_node_from_svg` - Create editable vector nodes from SVG markup (e.g. replace PNG icons with vectors), optionally inside a parent at a given position
 - `create_ellipse` - Create an ellipse (circle/oval)
 - `create_line` - Create a line
 - `create_polygon` - Create a polygon with a given number of sides
 - `create_star` - Create a star with a given number of points
 - `create_vector` - Create a vector node from path data
+- `create_slice` - Create a slice (an export region independent of layers). Add export formats to it with `set_export_settings`
 
 ### Modifying text content
 
 - `scan_text_nodes` - Scan text nodes with intelligent chunking for large designs
 - `set_text_content` - Set the text content of a single text node
 - `set_multiple_text_contents` - Batch update multiple text nodes efficiently
-- `set_text_properties` - Set font family/style/size, line height, letter spacing, text case, fill and alignment, optionally for a character range
+- `set_text_properties` - Set font family/style/size, line height, letter spacing, text case, fill and alignment, optionally for a character range; also hyperlinks (http/https/mailto), list type, indentation, text truncation and max lines
+- `get_available_fonts` - List fonts available to the Figma plugin (same as the font picker), grouped by family with their style names. Use the exact family/style with `create_text`, `set_text_properties` or text styles
 
 ### Auto Layout & Spacing
 
-- `set_layout_mode` - Set the layout mode and wrap behavior of a frame (NONE, HORIZONTAL, VERTICAL)
+- `set_layout_mode` - Set the layout mode and wrap behavior of a frame (NONE, HORIZONTAL, VERTICAL, GRID with row/column count, gaps, track sizes and auto tracks), plus `counterAxisAlignContent` and `strokesIncludedInLayout`
+- `set_layout_child` - Set how a node behaves inside its auto-layout parent: `layoutGrow`/`layoutAlign` for HORIZONTAL/VERTICAL parents, cell position, spans and cell alignment for GRID parents
 - `set_padding` - Set padding values for an auto-layout frame (top, right, bottom, left)
 - `set_axis_align` - Set primary and counter axis alignment for auto-layout frames
 - `set_layout_sizing` - Set horizontal and vertical sizing modes (FIXED, HUG, FILL) for frames, components, instances and text; HUG needs auto-layout or text, FILL needs an auto-layout parent
@@ -263,6 +266,8 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `set_node_properties` - Set opacity, rotation, blend mode, locked, mask, and min/max size
 - `set_constraints` - Set horizontal and vertical constraints of a node
 - `set_layout_grids` - Set layout grids (columns, rows, grid) on a frame
+- `set_fills` - Replace all fills or strokes of a node with a list of paints (solid, gradient, image); index 0 is the bottom-most paint, `paints: []` removes all
+- `set_export_settings` - Replace the export settings stored on a node (the Export panel in Figma); `settings: []` removes all. To export now use `export_node_as_image` or `download_design_assets`
 
 ### Layout & Organization
 
@@ -297,6 +302,10 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `create_effect_style` - Create a local effect style (shadow/blur token)
 - `update_effect_style` - Update the name, description or effects of an effect style
 - `apply_effect_style` - Apply an effect style to one or more nodes (`''` detaches)
+- `create_grid_style` - Create a local grid style (layout grid token), e.g. `Grid/12 columns`, using the same grid format as `set_layout_grids`
+- `update_grid_style` - Update the name, description or layout grids of a local grid style
+- `apply_grid_style` - Apply a grid style to one or more frames, components or instances (`''` detaches)
+- `import_style_by_key` - Import a published library style (paint, text, effect or grid) by its key so it can be applied locally
 - `get_local_components` - Get information about local components
 - `create_component_instance` - Create an instance of a component
 - `get_instance_overrides` - Extract override properties from a selected component instance
@@ -305,6 +314,9 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `combine_as_variants` - Combine components named `Prop=Value, Prop2=Value` into a Component Set (variants)
 - `add_component_property` - Add a TEXT, BOOLEAN or INSTANCE_SWAP property to a component/component set, optionally linked to a child node
 - `swap_instance` - Swap the main component of an instance
+- `edit_component_property` - Rename a BOOLEAN, TEXT or INSTANCE_SWAP component property or change its default value, preferred values or description (VARIANT properties not supported)
+- `delete_component_property` - Delete a BOOLEAN, TEXT or INSTANCE_SWAP property from a component or component set
+- `reset_instance_overrides` - Reset all overrides on one or more instances back to the main component
 
 ### Variables
 
@@ -315,6 +327,13 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `delete_variable` - Permanently delete a variable (destructive; bound nodes lose the binding)
 - `delete_variable_collection` - Permanently delete a collection with all its variables and modes (destructive)
 - `bind_variable` - Bind (or unbind with `variableId: null`) a variable to fills/strokes, size, spacing, padding, corner radius, stroke weight, opacity, characters or visibility
+- `update_variable` - Update variable metadata: name, description, scopes, hiddenFromPublishing and code syntax (WEB/ANDROID/iOS)
+- `update_variable_collection` - Rename a variable collection or change whether it is hidden from publishing
+- `manage_variable_modes` - Add, rename or remove a mode of a variable collection (e.g. Light/Dark)
+- `set_variable_mode` - Set the explicit variable mode of a node for a collection (e.g. switch a frame to Dark mode); `clear: true` makes it inherit from its parent
+- `get_library_variable_collections` - List variable collections available from enabled team libraries (requires the plugin's `teamlibrary` permission)
+- `get_library_variables` - List variables (key, name, resolvedType) in a team library variable collection
+- `import_variable_by_key` - Import a published library variable by its key so it can be bound locally
 
 ### Pages
 
@@ -341,6 +360,16 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 ### Export & Advanced
 
 - `export_node_as_image` - Export a node as an image (PNG, JPG, SVG, or PDF) - limited support on image currently returning base64 as text
+
+### Comments, Versions & Team Library (REST API)
+
+These tools use the Figma REST API and require `FIGMA_ACCESS_TOKEN` (no plugin needed).
+
+- `get_comments` - Read the comments of a Figma file (scope `file_comments:read`)
+- `post_comment` - Post a **real** comment or reply to a Figma file, visible to every collaborator under the token owner's account (scope `file_comments:write`); use only when explicitly asked
+- `get_file_versions` - List the version history of a Figma file, newest first (paginated)
+- `get_team_components` - List the published components of a team library (scope `team_library_content:read`); use the key with `create_component_instance`
+- `get_team_styles` - List the published styles of a team library (scope `team_library_content:read`); use the key with `import_style_by_key`
 
 ### Connection Management
 
@@ -369,6 +398,15 @@ The MCP server includes several helper prompts to guide you through complex desi
    ```
 
 2. Edit code.js and ui.html
+
+### Type checking
+
+```bash
+bun run typecheck          # MCP server (tsc --noEmit)
+bun run typecheck:plugin   # Figma plugin code.js against @figma/plugin-typings (tsconfig.plugin.json)
+```
+
+The plugin was granted the `teamlibrary` permission in `manifest.json`; reload (or re-link) the plugin in Figma after updating.
 
 ## Best Practices
 

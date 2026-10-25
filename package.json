@@ -39,9 +39,12 @@
     "prepare": "tsup",
     "build:watch": "tsup --watch",
     "dev": "bun run build:watch",
+    "typecheck": "tsc --noEmit -p .",
+    "typecheck:plugin": "tsc --noEmit -p tsconfig.plugin.json",
     "pub:release": "bun run build && npm publish"
   },
   "devDependencies": {
+    "@figma/plugin-typings": "^1.142.0",
     "@types/bun": "latest",
     "bun-types": "^1.2.5",
     "tsup": "^8.4.0",
