@@ -9,7 +9,10 @@ import { readFile, writeFile, mkdir } from "fs/promises";
 import path from "path";
 import { simplifyBundles, type VariableInfo } from "./design/simplify.js";
 import {
+  createDevResources,
+  deleteDevResource,
   downloadBytes,
+  getDevResources,
   getFigmaToken,
   getFileComments,
   getFileNodes,
@@ -18,7 +21,9 @@ import {
   getImageFillUrls,
   getImageRenderUrls,
   getLocalVariables as getRestLocalVariables,
+  getProjectFiles,
   getTeamComponents,
+  getTeamProjects,
   getTeamStyles,
   normalizeNodeId,
   parseFigmaUrl,
@@ -374,21 +379,13 @@ server.tool(
   },
   async ({ nodeIds, detail }: any) => {
     try {
-      const results = await Promise.all(
-        nodeIds.map(async (nodeId: any) => {
-          const result = await sendCommandToFigma("get_node_info", {
-            nodeId,
-            detail,
-          });
-          return { nodeId, info: result };
-        }),
-      );
+      const infos = nodeIds.length ? await getNodesInfoBatch(nodeIds, detail) : [];
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify(
-              results.map((result) => filterFigmaNode(result.info, detail)),
+              infos.map((info) => filterFigmaNode(info, detail)),
             ),
           },
         ],
@@ -407,6 +404,37 @@ server.tool(
     }
   },
 );
+
+const BATCH_NODES_ERROR_PREFIX = "Error getting nodes info: ";
+
+// One plugin round-trip instead of one get_node_info per id. The plugin skips
+// unknown ids, so a missing node is reported like get_node_info does.
+async function getNodesInfoBatch(
+  nodeIds: string[],
+  detail?: "basic" | "full",
+): Promise<any[]> {
+  let responses: any;
+  try {
+    responses = await sendCommandToFigma("get_nodes_info", { nodeIds, detail });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      message.startsWith(BATCH_NODES_ERROR_PREFIX)
+        ? message.slice(BATCH_NODES_ERROR_PREFIX.length)
+        : message,
+    );
+  }
+  const found: any[] = Array.isArray(responses) ? responses : [];
+  let next = 0;
+  return nodeIds.map((nodeId) => {
+    const response = found[next];
+    if (!response || response.nodeId !== nodeId) {
+      throw new Error(`Node not found with ID: ${nodeId}`);
+    }
+    next++;
+    return response.document;
+  });
+}
 
 // Create Rectangle Tool
 server.tool(
@@ -3122,7 +3150,28 @@ type FigmaCommand =
   | "update_grid_style"
   | "apply_grid_style"
   | "set_export_settings"
-  | "create_slice";
+  | "create_slice"
+  | "save_version"
+  | "set_image_properties"
+  | "duplicate_page"
+  | "get_style_usage"
+  | "get_viewport"
+  | "set_viewport"
+  | "reorder_style"
+  | "reorder_style_folder"
+  | "create_code_block"
+  | "create_link_preview"
+  | "extend_library_collection"
+  | "get_dev_resources"
+  | "add_dev_resource"
+  | "edit_dev_resource"
+  | "delete_dev_resource"
+  | "get_annotation_categories"
+  | "create_annotation_category"
+  | "get_measurements"
+  | "add_measurement"
+  | "edit_measurement"
+  | "delete_measurement";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -3284,7 +3333,7 @@ type CommandParams = {
     nodeId: string;
     imageBase64: string;
     scaleMode?: "FILL" | "FIT" | "CROP" | "TILE";
-  };
+  } & ImagePaintOptionsInput;
   rename_node: {
     nodeId: string;
     name: string;
@@ -3526,6 +3575,7 @@ type CommandParams = {
     types?: string[];
     limit?: number;
     includeHidden?: boolean;
+    allPages?: boolean;
   };
   create_sticky: {
     text: string;
@@ -3654,7 +3704,131 @@ type CommandParams = {
     name?: string;
     parentId?: string;
   };
+  save_version: { title: string; description?: string };
+  set_image_properties: {
+    nodeId: string;
+    paintIndex?: number;
+    scaleMode?: "FILL" | "FIT" | "CROP" | "TILE";
+  } & ImagePaintOptionsInput;
+  duplicate_page: { pageId: string; name?: string };
+  get_style_usage: { styleId: string; limit?: number };
+  get_viewport: Record<string, never>;
+  set_viewport: { center?: { x: number; y: number }; zoom?: number };
+  reorder_style: { styleId: string; afterStyleId?: string | null };
+  reorder_style_folder: {
+    styleType: StyleTypeInput;
+    folder: string;
+    afterFolder?: string | null;
+  };
+  create_code_block: {
+    code: string;
+    codeLanguage?: CodeBlockLanguage;
+    x?: number;
+    y?: number;
+    parentId?: string;
+  };
+  create_link_preview: {
+    url: string;
+    x?: number;
+    y?: number;
+    parentId?: string;
+  };
+  extend_library_collection: {
+    name: string;
+    collectionKey?: string;
+    collectionId?: string;
+  };
+  get_dev_resources: { nodeId: string; includeChildren?: boolean };
+  add_dev_resource: { nodeId: string; url: string; name?: string };
+  edit_dev_resource: {
+    nodeId: string;
+    currentUrl: string;
+    url?: string;
+    name?: string;
+  };
+  delete_dev_resource: { nodeId: string; url: string };
+  get_annotation_categories: Record<string, never>;
+  create_annotation_category: {
+    label: string;
+    color: AnnotationCategoryColorInput;
+  };
+  get_measurements: { nodeId?: string };
+  add_measurement: {
+    startNodeId: string;
+    startSide: MeasurementSideInput;
+    endNodeId: string;
+    endSide: MeasurementSideInput;
+    offset?: MeasurementOffsetInput;
+    freeText?: string;
+  };
+  edit_measurement: {
+    measurementId: string;
+    offset?: MeasurementOffsetInput;
+    freeText?: string;
+  };
+  delete_measurement: { measurementId: string };
 };
+
+type ImagePaintOptionsInput = {
+  imageTransform?: [
+    [number, number, number],
+    [number, number, number],
+  ];
+  scalingFactor?: number;
+  rotation?: 0 | 90 | 180 | 270;
+  filters?: Partial<
+    Record<
+      | "exposure"
+      | "contrast"
+      | "saturation"
+      | "temperature"
+      | "tint"
+      | "highlights"
+      | "shadows",
+      number
+    >
+  >;
+};
+
+type StyleTypeInput = "PAINT" | "TEXT" | "EFFECT" | "GRID" | "CUSTOM_ANIMATION";
+
+const CODE_BLOCK_LANGUAGES = [
+  "TYPESCRIPT",
+  "CPP",
+  "RUBY",
+  "CSS",
+  "JAVASCRIPT",
+  "HTML",
+  "JSON",
+  "GRAPHQL",
+  "PYTHON",
+  "GO",
+  "SQL",
+  "SWIFT",
+  "KOTLIN",
+  "RUST",
+  "BASH",
+  "PLAINTEXT",
+  "DART",
+] as const;
+type CodeBlockLanguage = (typeof CODE_BLOCK_LANGUAGES)[number];
+
+const ANNOTATION_CATEGORY_COLORS = [
+  "yellow",
+  "orange",
+  "red",
+  "pink",
+  "violet",
+  "blue",
+  "teal",
+  "green",
+] as const;
+type AnnotationCategoryColorInput = (typeof ANNOTATION_CATEGORY_COLORS)[number];
+
+type MeasurementSideInput = "TOP" | "RIGHT" | "BOTTOM" | "LEFT";
+type MeasurementOffsetInput =
+  | { type: "INNER"; relative: number }
+  | { type: "OUTER"; fixed: number };
 
 type GridTrackSizeInput = { type: "FLEX" | "FIXED" | "HUG"; value?: number };
 
@@ -4048,10 +4222,60 @@ function sendCommandToFigma(
   });
 }
 
+// Optional IMAGE paint fields shared by set_image_fill and set_image_properties
+const imageFilterValue = z.number().min(-1).max(1);
+const imagePaintOptionsShape = {
+  imageTransform: z
+    .tuple([
+      z.tuple([z.number(), z.number(), z.number()]),
+      z.tuple([z.number(), z.number(), z.number()]),
+    ])
+    .optional()
+    .describe(
+      "CROP only: 2x3 affine matrix [[a, b, tx], [c, d, ty]] mapping the layer onto the image (normalized 0-1 image space). E.g. [[0.5, 0, 0.25], [0, 0.5, 0.25]] shows the center half. Defaults to identity [[1,0,0],[0,1,0]] when CROP is used without it",
+    ),
+  scalingFactor: z
+    .number()
+    .positive()
+    .optional()
+    .describe("TILE only: image scale for tiling (e.g. 0.5 = half size)"),
+  rotation: z
+    .union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)])
+    .optional()
+    .describe("FILL/FIT/TILE only: image rotation in degrees (CROP rotates via imageTransform)"),
+  filters: z
+    .object({
+      exposure: imageFilterValue.optional(),
+      contrast: imageFilterValue.optional(),
+      saturation: imageFilterValue.optional(),
+      temperature: imageFilterValue.optional(),
+      tint: imageFilterValue.optional(),
+      highlights: imageFilterValue.optional(),
+      shadows: imageFilterValue.optional(),
+    })
+    .strict()
+    .optional()
+    .describe("Image adjustments, each -1 to 1 (0 = unchanged)"),
+};
+
+function checkImagePaintOptions(scaleMode: string, params: any) {
+  if (params.imageTransform !== undefined && scaleMode !== "CROP") {
+    throw new Error("imageTransform only applies to scaleMode CROP");
+  }
+  if (params.scalingFactor !== undefined && scaleMode !== "TILE") {
+    throw new Error("scalingFactor only applies to scaleMode TILE");
+  }
+  if (params.rotation !== undefined && scaleMode === "CROP") {
+    throw new Error(
+      "rotation does not apply to scaleMode CROP (rotate via imageTransform)",
+    );
+  }
+}
+
 // Set Image Fill Tool
 server.tool(
   "set_image_fill",
-  "Fill a node in Figma with an image from a local file path, a URL, or base64 data (replaces the node's existing fills)",
+  "Fill a node in Figma with an image from a local file path, a URL, or base64 data (replaces the node's existing fills). Optional imageTransform (CROP), scalingFactor (TILE), rotation and filters adjust the image; use set_image_properties to change them later without re-uploading.",
   {
     nodeId: z.string().describe("The ID of the node to fill"),
     imagePath: z
@@ -4076,9 +4300,22 @@ server.tool(
       .enum(["FILL", "FIT", "CROP", "TILE"])
       .optional()
       .describe("How the image fills the node (default: FILL)"),
+    ...imagePaintOptionsShape,
   },
-  async ({ nodeId, imagePath, imageUrl, imageBase64, scaleMode }: any) => {
+  async ({
+    nodeId,
+    imagePath,
+    imageUrl,
+    imageBase64,
+    scaleMode,
+    imageTransform,
+    scalingFactor,
+    rotation,
+    filters,
+  }: any) => {
     try {
+      const imageOptions = { imageTransform, scalingFactor, rotation, filters };
+      checkImagePaintOptions(scaleMode || "FILL", imageOptions);
       const sources = [imagePath, imageUrl, imageBase64].filter(
         (source) => source !== undefined && source !== "",
       );
@@ -4116,6 +4353,7 @@ server.tool(
         nodeId,
         imageBase64: base64Data,
         scaleMode: scaleMode || "FILL",
+        ...imageOptions,
       });
       const typedResult = result as {
         name: string;
@@ -6300,10 +6538,22 @@ server.tool(
       .boolean()
       .optional()
       .describe("Include hidden nodes and nodes inside hidden parents (default true)"),
+    allPages: z
+      .boolean()
+      .optional()
+      .describe(
+        "Search every page instead of the current one (default false; cannot be combined with parentId). Results include pageId/pageName. Scanning stops at the first page boundary after more than `limit` matches; then `totalIsLowerBound` is true and `total` only counts the scanned pages (`pagesScanned` of `pageCount`). Loading all pages can be slow on large files",
+      ),
   },
   async (params: any) => {
     try {
+      if (params.allPages && params.parentId) {
+        throw new Error("Use either parentId or allPages, not both");
+      }
       if (params.nameRegex !== undefined) {
+        if (/\([^)]*[+*][^)]*\)[+*{]/.test(params.nameRegex)) {
+          throw new Error("nameRegex rejected: nested quantifiers are not allowed");
+        }
         try {
           new RegExp(params.nameRegex);
         } catch (error) {
@@ -6312,7 +6562,11 @@ server.tool(
           );
         }
       }
-      const result = await sendCommandToFigma("find_nodes", params, 60000);
+      const result = await sendCommandToFigma(
+        "find_nodes",
+        params,
+        params.allPages ? 120000 : 60000,
+      );
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error finding nodes", error);
@@ -7101,6 +7355,495 @@ server.tool(
   },
 );
 
+// Typed as a raw shape so the `title` key isn't mistaken for tool annotations
+const saveVersionShape: Record<string, z.ZodTypeAny> = {
+  title: z.string().trim().min(1).describe("Version title (non-empty)"),
+  description: z.string().optional().describe("Optional version description"),
+};
+
+// Save Version Tool
+server.tool(
+  "save_version",
+  "Save a named version to the file's version history. Changes made just before may not be included; save after edits settle.",
+  saveVersionShape,
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("save_version", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error saving version", error);
+    }
+  },
+);
+
+// Set Image Properties Tool
+server.tool(
+  "set_image_properties",
+  "Change scaleMode, crop (imageTransform), tiling scale, rotation or filters of an IMAGE fill already on a node, without re-uploading the image. Fields not given are kept (when still valid for the scaleMode); filters are merged into the existing ones.",
+  {
+    nodeId: z.string().describe("Node whose image fill to change"),
+    paintIndex: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Index in the node's fills (default: first IMAGE fill)"),
+    scaleMode: z
+      .enum(["FILL", "FIT", "CROP", "TILE"])
+      .optional()
+      .describe("New scale mode (default: keep current)"),
+    ...imagePaintOptionsShape,
+  },
+  async (params: any) => {
+    try {
+      if (params.scaleMode !== undefined) {
+        checkImagePaintOptions(params.scaleMode, params);
+      }
+      const result = await sendCommandToFigma("set_image_properties", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting image properties", error);
+    }
+  },
+);
+
+// Duplicate Page Tool
+server.tool(
+  "duplicate_page",
+  "Duplicate a page with all its content. Components on the copy become instances of the originals.",
+  {
+    pageId: z.string().describe("ID of the page to duplicate"),
+    name: z.string().optional().describe("Name for the copy (default: Figma's)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("duplicate_page", params, 60000);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error duplicating page", error);
+    }
+  },
+);
+
+// Get Style Usage Tool
+server.tool(
+  "get_style_usage",
+  "List the nodes that use a style and in which field (fillStyleId, textStyleId, ...).",
+  {
+    styleId: z.string().describe("Style ID"),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .optional()
+      .describe("Maximum consumers returned (default 200, max 1000)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("get_style_usage", params, 60000);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting style usage", error);
+    }
+  },
+);
+
+// Get Viewport Tool
+server.tool(
+  "get_viewport",
+  "Get the current page's viewport: center, zoom (1 = 100%) and visible bounds.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_viewport");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting viewport", error);
+    }
+  },
+);
+
+// Set Viewport Tool
+server.tool(
+  "set_viewport",
+  "Move and/or zoom the viewport of the current page. To fit specific nodes, use set_focus or set_selections instead.",
+  {
+    center: z
+      .object({ x: z.number(), y: z.number() })
+      .optional()
+      .describe("Canvas point to center on"),
+    zoom: z
+      .number()
+      .positive()
+      .optional()
+      .describe("Zoom level (1 = 100%, 0.5 = 50%)"),
+  },
+  async (params: any) => {
+    try {
+      if (params.center === undefined && params.zoom === undefined) {
+        throw new Error("Provide center and/or zoom");
+      }
+      const result = await sendCommandToFigma("set_viewport", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting viewport", error);
+    }
+  },
+);
+
+// Reorder Style Tool
+server.tool(
+  "reorder_style",
+  "Move a local style after another local style of the same type and folder in the styles list (Figma Design only).",
+  {
+    styleId: z.string().describe("Local style to move"),
+    afterStyleId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Style to place it after; omit or null to move it first"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("reorder_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error reordering style", error);
+    }
+  },
+);
+
+// Reorder Style Folder Tool
+server.tool(
+  "reorder_style_folder",
+  "Move a local style folder after another folder with the same parent (Figma Design only). Nested folders use the full '/'-delimited name.",
+  {
+    styleType: z
+      .enum(["PAINT", "TEXT", "EFFECT", "GRID", "CUSTOM_ANIMATION"])
+      .describe("Type of styles in the folder"),
+    folder: z.string().min(1).describe("Folder to move, e.g. 'Brand/Primary'"),
+    afterFolder: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Folder to place it after; omit or null to move it first"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("reorder_style_folder", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error reordering style folder", error);
+    }
+  },
+);
+
+// Create Code Block Tool
+server.tool(
+  "create_code_block",
+  "Create a code block (FigJam only).",
+  {
+    code: z.string().describe("Code content"),
+    codeLanguage: z
+      .enum(CODE_BLOCK_LANGUAGES)
+      .optional()
+      .describe("Syntax highlighting language (default: Figma's)"),
+    x: z.number().optional().describe("X position (default 0)"),
+    y: z.number().optional().describe("Y position (default 0)"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID (default: current page)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_code_block", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating code block", error);
+    }
+  },
+);
+
+const httpUrlSchema = z
+  .string()
+  .url()
+  .refine((value) => /^https?:\/\//i.test(value), {
+    message: "URL must use http or https",
+  });
+
+// Create Link Preview Tool
+server.tool(
+  "create_link_preview",
+  "Insert a link preview for a URL (FigJam only): an embed for oEmbed providers (e.g. YouTube), otherwise an unfurled card.",
+  {
+    url: httpUrlSchema.describe("http(s) URL to preview"),
+    x: z.number().optional().describe("X position (default: where Figma places it)"),
+    y: z.number().optional().describe("Y position (default: where Figma places it)"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID (default: current page)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_link_preview", params, 60000);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating link preview", error);
+    }
+  },
+);
+
+// Extend Library Collection Tool
+server.tool(
+  "extend_library_collection",
+  "Create an extended variable collection (inherits variables, allows overrides) from a library collection key or a local collection ID. Enterprise plan only.",
+  {
+    name: z.string().trim().min(1).describe("Name of the new extended collection"),
+    collectionKey: z
+      .string()
+      .optional()
+      .describe(
+        "Key of a library or local collection (see get_library_variable_collections)",
+      ),
+    collectionId: z
+      .string()
+      .optional()
+      .describe("ID of a local variable collection"),
+  },
+  async (params: any) => {
+    try {
+      if (Boolean(params.collectionKey) === Boolean(params.collectionId)) {
+        throw new Error("Provide exactly one of collectionKey or collectionId");
+      }
+      const result = await sendCommandToFigma("extend_library_collection", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error extending variable collection", error);
+    }
+  },
+);
+
+// Get Dev Resources Tool
+server.tool(
+  "get_dev_resources",
+  "List dev resources (links to code, docs, tickets) attached to a node, including inherited ones.",
+  {
+    nodeId: z.string().describe("Node ID"),
+    includeChildren: z
+      .boolean()
+      .optional()
+      .describe("Also include dev resources of descendants (default false)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("get_dev_resources", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting dev resources", error);
+    }
+  },
+);
+
+// Add Dev Resource Tool
+server.tool(
+  "add_dev_resource",
+  "Attach a dev resource link to a node. Fails if the node already has a resource with that URL.",
+  {
+    nodeId: z.string().describe("Node ID"),
+    url: httpUrlSchema.describe("http(s) URL of the resource"),
+    name: z
+      .string()
+      .optional()
+      .describe("Display name (default: derived from the URL by Figma)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("add_dev_resource", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error adding dev resource", error);
+    }
+  },
+);
+
+// Edit Dev Resource Tool
+server.tool(
+  "edit_dev_resource",
+  "Change the URL and/or name of a dev resource on a node. Inherited resources must be edited on their main component (inheritedNodeId).",
+  {
+    nodeId: z.string().describe("Node ID"),
+    currentUrl: httpUrlSchema.describe("Current URL of the resource"),
+    url: httpUrlSchema.optional().describe("New http(s) URL"),
+    name: z.string().optional().describe("New display name"),
+  },
+  async (params: any) => {
+    try {
+      if (params.url === undefined && params.name === undefined) {
+        throw new Error("Provide url and/or name to change");
+      }
+      const result = await sendCommandToFigma("edit_dev_resource", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error editing dev resource", error);
+    }
+  },
+);
+
+// Delete Dev Resource Tool
+server.tool(
+  "delete_dev_resource",
+  "Remove a dev resource from a node by URL.",
+  {
+    nodeId: z.string().describe("Node ID"),
+    url: httpUrlSchema.describe("URL of the resource to remove"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("delete_dev_resource", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting dev resource", error);
+    }
+  },
+);
+
+// Get Annotation Categories Tool
+server.tool(
+  "get_annotation_categories",
+  "List the annotation categories in the file (id, label, color, isPreset). Use the id as categoryId in set_annotation.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_annotation_categories");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting annotation categories", error);
+    }
+  },
+);
+
+// Create Annotation Category Tool
+server.tool(
+  "create_annotation_category",
+  "Create an annotation category.",
+  {
+    label: z.string().trim().min(1).describe("Category label"),
+    color: z.enum(ANNOTATION_CATEGORY_COLORS).describe("Category color"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_annotation_category", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating annotation category", error);
+    }
+  },
+);
+
+const measurementSideSchema = z.enum(["TOP", "RIGHT", "BOTTOM", "LEFT"]);
+const measurementOffsetSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("INNER"),
+    relative: z.number().describe("Position along the measured edge, relative"),
+  }),
+  z.object({
+    type: z.literal("OUTER"),
+    fixed: z.number().describe("Fixed distance outside the nodes, in pixels"),
+  }),
+]);
+
+// Get Measurements Tool
+server.tool(
+  "get_measurements",
+  "List Dev Mode measurements on the current page, optionally only those touching a node. Read-only and works in the design editor; creating/editing measurements is Dev Mode only and not available with the current plugin manifest.",
+  {
+    nodeId: z
+      .string()
+      .optional()
+      .describe("Only measurements that start or end at this node"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("get_measurements", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting measurements", error);
+    }
+  },
+);
+
+// Add Measurement Tool
+server.tool(
+  "add_measurement",
+  "Add a measurement between two nodes on the current page. Both sides must be on the same axis (LEFT/RIGHT or TOP/BOTTOM). Dev Mode only — not available with the current plugin manifest (editorType figma/figjam); will return an error.",
+  {
+    startNodeId: z.string().describe("Start node ID"),
+    startSide: measurementSideSchema.describe("Edge of the start node"),
+    endNodeId: z.string().describe("End node ID"),
+    endSide: measurementSideSchema.describe("Edge of the end node"),
+    offset: measurementOffsetSchema
+      .optional()
+      .describe("Label offset (default { type: 'INNER', relative: 0 })"),
+    freeText: z.string().optional().describe("Custom label text"),
+  },
+  async (params: any) => {
+    try {
+      const horizontal = (side: string) => side === "LEFT" || side === "RIGHT";
+      if (horizontal(params.startSide) !== horizontal(params.endSide)) {
+        throw new Error(
+          "startSide and endSide must be on the same axis (LEFT/RIGHT or TOP/BOTTOM)",
+        );
+      }
+      const result = await sendCommandToFigma("add_measurement", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error adding measurement", error);
+    }
+  },
+);
+
+// Edit Measurement Tool
+server.tool(
+  "edit_measurement",
+  "Change a measurement's offset and/or label text. Dev Mode only — not available with the current plugin manifest (editorType figma/figjam); will return an error.",
+  {
+    measurementId: z.string().describe("Measurement ID (see get_measurements)"),
+    offset: measurementOffsetSchema.optional().describe("New label offset"),
+    freeText: z.string().optional().describe("New label text"),
+  },
+  async (params: any) => {
+    try {
+      if (params.offset === undefined && params.freeText === undefined) {
+        throw new Error("Provide offset and/or freeText to change");
+      }
+      const result = await sendCommandToFigma("edit_measurement", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error editing measurement", error);
+    }
+  },
+);
+
+// Delete Measurement Tool
+server.tool(
+  "delete_measurement",
+  "Delete a measurement from the current page. Dev Mode only — not available with the current plugin manifest (editorType figma/figjam); will return an error.",
+  {
+    measurementId: z.string().describe("Measurement ID (see get_measurements)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("delete_measurement", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting measurement", error);
+    }
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Design-to-code tools: read designs as a compact, code-oriented spec
 // ---------------------------------------------------------------------------
@@ -7709,6 +8452,257 @@ server.tool(
       return errorResult("Error reading team styles", error);
     }
   },
+);
+
+const restNodeIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9:;_-]+$/, "nodeId must look like 1:2, 1-2 or I1:2;3:4");
+
+// Get Team Projects Tool (REST API)
+server.tool(
+  "get_team_projects",
+  "List the projects of a team through the REST API (requires FIGMA_ACCESS_TOKEN with projects:read). Use a project id with get_project_files.",
+  {
+    teamId: teamPageSchema.teamId,
+  },
+  async ({ teamId }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const data = await getTeamProjects(token, teamId);
+      const projects = (data.projects || []).map((p: any) => ({
+        id: String(p.id),
+        name: p.name,
+      }));
+      return jsonResult({
+        teamId,
+        teamName: data.name,
+        count: projects.length,
+        projects,
+      });
+    } catch (error) {
+      return errorResult("Error reading team projects", error);
+    }
+  },
+);
+
+// Get Project Files Tool (REST API)
+server.tool(
+  "get_project_files",
+  "List the files of a project through the REST API (requires FIGMA_ACCESS_TOKEN with projects:read). Use a file key with the other REST tools.",
+  {
+    projectId: z
+      .string()
+      .regex(/^\d+$/, "projectId must be numeric")
+      .describe("Project ID, from get_team_projects or figma.com/files/project/<projectId>"),
+    branchData: z
+      .boolean()
+      .optional()
+      .describe("Also list the branches of each file (default false)"),
+  },
+  async ({ projectId, branchData }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const data = await getProjectFiles(token, projectId, branchData === true);
+      const files = (data.files || []).map((f: any) => ({
+        key: f.key,
+        name: f.name,
+        lastModified: f.last_modified,
+        thumbnailUrl: f.thumbnail_url,
+        branches: f.branches,
+      }));
+      return jsonResult({
+        projectId,
+        projectName: data.name,
+        count: files.length,
+        files,
+      });
+    } catch (error) {
+      return errorResult("Error reading project files", error);
+    }
+  },
+);
+
+// Get File Dev Resources Tool (REST API)
+server.tool(
+  "get_file_dev_resources",
+  "List the dev resources (links shown in Dev Mode) of a Figma file through the REST API (requires FIGMA_ACCESS_TOKEN with file_dev_resources:read). Optionally only for some nodes.",
+  {
+    ...restFileSchema,
+    nodeIds: z
+      .array(restNodeIdSchema)
+      .optional()
+      .describe("Only return dev resources attached to these nodes (e.g. 1:2 or 1-2)"),
+  },
+  async ({ fileUrl, fileKey, nodeIds }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      const data = await getDevResources(
+        token,
+        target.fileKey,
+        (nodeIds || []).map(normalizeNodeId),
+      );
+      const devResources = (data.dev_resources || []).map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        url: r.url,
+        nodeId: r.node_id,
+      }));
+      return jsonResult({
+        fileKey: target.fileKey,
+        count: devResources.length,
+        devResources,
+      });
+    } catch (error) {
+      return errorResult("Error reading dev resources", error);
+    }
+  },
+);
+
+// Create File Dev Resources Tool (REST API)
+server.tool(
+  "create_file_dev_resources",
+  "Attach REAL dev resources (links shown in Dev Mode) to nodes of a Figma file through the REST API. They are immediately visible to every collaborator; only use it when the user explicitly asks. Requires FIGMA_ACCESS_TOKEN with file_dev_resources:write.",
+  {
+    ...restFileSchema,
+    devResources: z
+      .array(
+        z.object({
+          nodeId: restNodeIdSchema.describe("Node to attach the link to (e.g. 1:2 or 1-2)"),
+          name: z.string().min(1).max(500).describe("Link title"),
+          url: httpUrlSchema.describe("Link URL (http or https)"),
+        }),
+      )
+      .min(1)
+      .max(50)
+      .describe("Dev resources to create (max 50)"),
+  },
+  async ({ fileUrl, fileKey, devResources }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      const data = await createDevResources(
+        token,
+        devResources.map((r: any) => ({
+          name: r.name,
+          url: r.url,
+          file_key: target.fileKey,
+          node_id: normalizeNodeId(r.nodeId),
+        })),
+      );
+      const created = (data.links_created || []).map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        url: r.url,
+        nodeId: r.node_id,
+      }));
+      const errors = (data.errors || []).map((e: any) => ({
+        nodeId: e.node_id,
+        error: e.error,
+      }));
+      return jsonResult({
+        fileKey: target.fileKey,
+        createdCount: created.length,
+        created,
+        errors,
+      });
+    } catch (error) {
+      return errorResult("Error creating dev resources", error);
+    }
+  },
+);
+
+// Delete File Dev Resource Tool (REST API)
+server.tool(
+  "delete_file_dev_resource",
+  "Permanently delete a dev resource (Dev Mode link) from a Figma file through the REST API; only use it when the user explicitly asks. Requires FIGMA_ACCESS_TOKEN with file_dev_resources:write.",
+  {
+    ...restFileSchema,
+    devResourceId: z
+      .string()
+      .regex(REST_KEY_PATTERN, "devResourceId may only contain letters, digits, _ and -")
+      .describe("Dev resource id, from get_file_dev_resources"),
+  },
+  async ({ fileUrl, fileKey, devResourceId }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      await deleteDevResource(token, target.fileKey, devResourceId);
+      return jsonResult({
+        fileKey: target.fileKey,
+        devResourceId,
+        deleted: true,
+      });
+    } catch (error) {
+      return errorResult("Error deleting dev resource", error);
+    }
+  },
+);
+
+// Read-only resources backed by the plugin
+function registerPluginResource(
+  name: string,
+  uri: string,
+  description: string,
+  command: FigmaCommand,
+) {
+  server.resource(
+    name,
+    uri,
+    { description, mimeType: "application/json" },
+    async (resourceUri) => {
+      let result: unknown;
+      try {
+        result = await sendCommandToFigma(command);
+      } catch (error) {
+        throw new Error(
+          `Could not read ${uri} from the Figma plugin: ${(
+            error instanceof Error ? error.message : String(error)
+          ).replace(/\.+$/, "")}. Make sure the relay is running, the plugin is open in Figma and join_channel was called.`,
+        );
+      }
+      return {
+        contents: [
+          {
+            uri: resourceUri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+}
+
+registerPluginResource(
+  "document",
+  "figma://document",
+  "Current Figma document and page info (same as get_document_info)",
+  "get_document_info",
+);
+registerPluginResource(
+  "selection",
+  "figma://selection",
+  "Current selection in Figma (same as get_selection)",
+  "get_selection",
+);
+registerPluginResource(
+  "styles",
+  "figma://styles",
+  "Local paint, text, effect and grid styles (same as get_styles)",
+  "get_styles",
+);
+registerPluginResource(
+  "variables",
+  "figma://variables",
+  "Local variable collections and variables (same as get_local_variables)",
+  "get_local_variables",
+);
+registerPluginResource(
+  "pages",
+  "figma://pages",
+  "Pages of the current document (same as get_pages)",
+  "get_pages",
 );
 
 server.prompt(

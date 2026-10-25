@@ -3,7 +3,7 @@
 **OpenCode Figma MCP** is a Model Context Protocol (MCP) server that connects AI coding agents — [OpenCode](https://opencode.ai) and Claude Code — to Figma. It works in both directions:
 
 - **Design → Code**: read a frame, component, or a Figma URL and get a compact, code-oriented spec (layout, auto-layout, typography, colors, effects, variables, component props) plus downloadable SVG/PNG assets, so the agent can generate UI code that matches the design.
-- **Code → Design**: create and edit Figma content from the agent — frames, shapes, text, auto-layout, components, instances, variables, annotations, prototypes, and more (133 tools).
+- **Code → Design**: create and edit Figma content from the agent — frames, shapes, text, auto-layout, components, instances, variables, annotations, prototypes, and more (159 tools).
 
 ```
 OpenCode / Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ Relay (localhost:3055) ←(WebSocket)→ Figma Plugin
@@ -180,7 +180,6 @@ Read a design as a compact, code-oriented spec (CSS-like layout, shared style re
 - `get_design_context` - Read the current selection (or given node IDs) through the plugin. No token needed; Figma and the plugin must be open.
 - `get_figma_design_from_url` - Read a design from a Figma link through the REST API, without the plugin. Without `node-id` it returns the page/frame outline. Requires `FIGMA_ACCESS_TOKEN`.
 - `download_design_assets` - Save icons (SVG), illustrations and image fills to a local folder, via the plugin or the REST API.
-- `export_node_as_image` - Get a PNG of a node as a visual reference.
 
 To use the REST API tools, create a personal access token in Figma (Settings → Security → Personal access tokens, scope `file_content:read`) and export it before starting OpenCode:
 
@@ -200,12 +199,26 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `get_node_info` - Get detailed information about a specific node (`detail: "full"` adds visibility/opacity, constraints, effects, style ids, bound variables, component properties, auto-layout & sizing fields and stroke details)
 - `get_nodes_info` - Get detailed information about multiple nodes by providing an array of node IDs (also supports `detail: "full"`)
 - `set_focus` - Set focus on a specific node by selecting it and scrolling viewport to it
+- `get_viewport` - Get the current page's viewport: center, zoom (1 = 100%) and visible bounds
+- `set_viewport` - Move and/or zoom the viewport of the current page (to fit nodes use `set_focus` or `set_selections`)
 - `set_selections` - Set selection to multiple nodes and scroll viewport to show them
 
 ### Annotations
 
 - `get_annotations` - Get all annotations in the current document or specific node
 - `set_annotation` - Create or update an annotation with markdown support
+- `get_annotation_categories` - List the annotation categories in the file (id, label, color, isPreset); use the id as `categoryId` in `set_annotation`
+- `create_annotation_category` - Create an annotation category
+- `get_measurements` - List Dev Mode measurements on the current page, optionally only those touching a node
+- `add_measurement` - Add a measurement between two nodes on the current page (Dev Mode only)
+- `edit_measurement` - Change a measurement's offset and/or label text (Dev Mode only)
+- `delete_measurement` - Delete a measurement from the current page (Dev Mode only)
+- `get_dev_resources` - List dev resources (links to code, docs, tickets) attached to a node, including inherited ones
+- `add_dev_resource` - Attach a dev resource link to a node
+- `edit_dev_resource` - Change the URL and/or name of a dev resource on a node
+- `delete_dev_resource` - Remove a dev resource from a node by URL
+
+The plugin manifest does not declare Dev Mode yet, so `add_measurement`, `edit_measurement` and `delete_measurement` currently fail outside Dev Mode.
 - `set_multiple_annotations` - Batch create/update multiple annotations efficiently
 - `scan_nodes_by_types` - Scan for nodes with specific types (useful for finding annotation targets)
 
@@ -260,7 +273,8 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `set_fill_color` - Set the fill color of a node (RGBA)
 - `set_stroke_color` - Set the stroke color and weight of a node
 - `set_corner_radius` - Set the corner radius of a node with optional per-corner control
-- `set_image_fill` - Fill a node with an image from a local file path, URL, or base64 data (FILL, FIT, CROP, or TILE)
+- `set_image_fill` - Fill a node with an image from a local file path, URL, or base64 data (FILL, FIT, CROP, or TILE); optional `imageTransform`, `scalingFactor`, `rotation` and `filters`
+- `set_image_properties` - Change scaleMode, crop (`imageTransform`), tiling scale, rotation or filters of an IMAGE fill already on a node, without re-uploading the image
 - `set_gradient_fill` - Fill a node with a linear, radial, angular or diamond gradient
 - `set_stroke_properties` - Set stroke weight, alignment, dash pattern, caps and joins
 - `set_node_properties` - Set opacity, rotation, blend mode, locked, mask, and min/max size
@@ -288,6 +302,9 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 ### Components & Styles
 
 - `get_styles` - Get information about local styles
+- `get_style_usage` - List the nodes that use a style and in which field (fillStyleId, textStyleId, ...)
+- `reorder_style` - Move a local style after another local style of the same type and folder (Figma Design only)
+- `reorder_style_folder` - Move a local style folder after another folder with the same parent (Figma Design only)
 - `create_text_style` - Create a local text style (font, size, line height, letter spacing, case, decoration)
 - `update_text_style` - Update an existing local text style
 - `apply_text_style` - Apply a text style to one or more text nodes (including text inside instances)
@@ -332,6 +349,7 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `manage_variable_modes` - Add, rename or remove a mode of a variable collection (e.g. Light/Dark)
 - `set_variable_mode` - Set the explicit variable mode of a node for a collection (e.g. switch a frame to Dark mode); `clear: true` makes it inherit from its parent
 - `get_library_variable_collections` - List variable collections available from enabled team libraries (requires the plugin's `teamlibrary` permission)
+- `extend_library_collection` - Create an extended variable collection (inherits variables, allows overrides) from a library collection key or a local collection ID (Enterprise plan only)
 - `get_library_variables` - List variables (key, name, resolvedType) in a team library variable collection
 - `import_variable_by_key` - Import a published library variable by its key so it can be bound locally
 
@@ -340,17 +358,20 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `get_pages` - List pages of the document
 - `create_page` - Create a new page
 - `set_current_page` - Switch to another page
+- `duplicate_page` - Duplicate a page with all its content
 
 ### Inspection
 
 - `get_node_css` - Get the CSS of a node generated by Figma
-- `find_nodes` - Find nodes by name and/or type
+- `find_nodes` - Find nodes by name and/or type (`allPages: true` searches every page)
 
 ### FigJam
 
 - `create_sticky` - Create a sticky note
 - `create_shape_with_text` - Create a FigJam shape with text
 - `create_table` - Create a FigJam table
+- `create_code_block` - Create a code block (FigJam only)
+- `create_link_preview` - Insert a link preview for a URL (FigJam only)
 
 ### Plugin Data
 
@@ -360,6 +381,7 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 ### Export & Advanced
 
 - `export_node_as_image` - Export a node as an image (PNG, JPG, SVG, or PDF) - limited support on image currently returning base64 as text
+- `save_version` - Save a named version to the file's version history
 
 ### Comments, Versions & Team Library (REST API)
 
@@ -370,10 +392,25 @@ These tools use the Figma REST API and require `FIGMA_ACCESS_TOKEN` (no plugin n
 - `get_file_versions` - List the version history of a Figma file, newest first (paginated)
 - `get_team_components` - List the published components of a team library (scope `team_library_content:read`); use the key with `create_component_instance`
 - `get_team_styles` - List the published styles of a team library (scope `team_library_content:read`); use the key with `import_style_by_key`
+- `get_team_projects` - List the projects of a team (scope `projects:read`)
+- `get_project_files` - List the files of a project (scope `projects:read`)
+- `get_file_dev_resources` - List the dev resources (Dev Mode links) of a file, optionally only for some nodes (scope `file_dev_resources:read`)
+- `create_file_dev_resources` - Attach **real** dev resources to nodes of a file, visible to every collaborator (scope `file_dev_resources:write`); use only when explicitly asked
+- `delete_file_dev_resource` - Permanently delete a dev resource from a file (scope `file_dev_resources:write`); use only when explicitly asked
 
 ### Connection Management
 
 - `join_channel` - Join a specific channel to communicate with Figma
+
+### MCP Resources
+
+Read-only resources served through the plugin (Figma and the plugin must be connected):
+
+- `figma://document` - Current document and page info (same as `get_document_info`)
+- `figma://selection` - Current selection (same as `get_selection`)
+- `figma://styles` - Local paint, text, effect and grid styles (same as `get_styles`)
+- `figma://variables` - Local variable collections and variables (same as `get_local_variables`)
+- `figma://pages` - Pages of the current document (same as `get_pages`)
 
 ### MCP Prompts
 
@@ -399,11 +436,13 @@ The MCP server includes several helper prompts to guide you through complex desi
 
 2. Edit code.js and ui.html
 
-### Type checking
+### Type checking, tests & lint
 
 ```bash
 bun run typecheck          # MCP server (tsc --noEmit)
 bun run typecheck:plugin   # Figma plugin code.js against @figma/plugin-typings (tsconfig.plugin.json)
+bun test                   # unit tests (tests/simplify.test.ts, tests/figma_rest.test.ts)
+bun run lint               # checks plugin code.js (scripts/check-plugin.mjs)
 ```
 
 The plugin was granted the `teamlibrary` permission in `manifest.json`; reload (or re-link) the plugin in Figma after updating.
