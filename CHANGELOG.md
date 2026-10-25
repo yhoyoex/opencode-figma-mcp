@@ -4,6 +4,8 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-25
+
 ### Added
 
 - 30 tool baru (total 109):
