@@ -56,7 +56,7 @@ async function figmaGet(path: string, token: string): Promise<any> {
 }
 
 async function figmaRequest(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   path: string,
   token: string,
   body?: unknown,
@@ -87,7 +87,8 @@ async function figmaRequest(
       String(detail).length > 500 ? `${String(detail).slice(0, 500)}…` : detail;
     throw new Error(`Figma API ${res.status}: ${shortDetail}${hint}`);
   }
-  return JSON.parse(text);
+  // DELETE endpoints may answer with an empty body
+  return text ? JSON.parse(text) : {};
 }
 
 export async function getFileNodes(
@@ -201,7 +202,79 @@ export async function getTeamStyles(
   return figmaGet(`/teams/${encodeURIComponent(teamId)}/styles${teamLibraryQuery(page)}`, token);
 }
 
+export async function getTeamProjects(token: string, teamId: string): Promise<any> {
+  return figmaGet(`/teams/${encodeURIComponent(teamId)}/projects`, token);
+}
+
+export async function getProjectFiles(
+  token: string,
+  projectId: string,
+  branchData = false,
+): Promise<any> {
+  const query = branchData ? "?branch_data=true" : "";
+  return figmaGet(`/projects/${encodeURIComponent(projectId)}/files${query}`, token);
+}
+
+export async function getDevResources(
+  token: string,
+  fileKey: string,
+  nodeIds: string[] = [],
+): Promise<any> {
+  const query = nodeIds.length
+    ? `?${new URLSearchParams({ node_ids: nodeIds.join(",") })}`
+    : "";
+  return figmaGet(`/files/${encodeURIComponent(fileKey)}/dev_resources${query}`, token);
+}
+
+export interface NewDevResource {
+  name: string;
+  url: string;
+  file_key: string;
+  node_id: string;
+}
+
+export async function createDevResources(
+  token: string,
+  devResources: NewDevResource[],
+): Promise<any> {
+  return figmaRequest("POST", "/dev_resources", token, { dev_resources: devResources });
+}
+
+export async function deleteDevResource(
+  token: string,
+  fileKey: string,
+  devResourceId: string,
+): Promise<any> {
+  return figmaRequest(
+    "DELETE",
+    `/files/${encodeURIComponent(fileKey)}/dev_resources/${encodeURIComponent(devResourceId)}`,
+    token,
+  );
+}
+
+// Image URLs returned by Figma's /images endpoints are served from Figma or S3.
+const DOWNLOAD_HOST_SUFFIXES = ["figma.com", "figmausercontent.com", "amazonaws.com"];
+
+export function assertAllowedDownloadUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Download rejected: invalid URL ${url}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  const allowed = DOWNLOAD_HOST_SUFFIXES.some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+  );
+  if (parsed.protocol !== "https:" || !allowed) {
+    throw new Error(
+      `Download rejected: ${url} is not an https URL on ${DOWNLOAD_HOST_SUFFIXES.join(", ")}`,
+    );
+  }
+}
+
 export async function downloadBytes(url: string): Promise<Uint8Array> {
+  assertAllowedDownloadUrl(url);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Download failed (${res.status}) for ${url}`);
   return new Uint8Array(await res.arrayBuffer());

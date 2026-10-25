@@ -39,7 +39,9 @@
     "prepare": "tsup",
     "build:watch": "tsup --watch",
     "dev": "bun run build:watch",
-    "typecheck": "tsc --noEmit -p .",
+    "test": "bun test",
+    "lint": "node scripts/check-plugin.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "typecheck:plugin": "tsc --noEmit -p tsconfig.plugin.json",
     "pub:release": "bun run build && npm publish"
   },

@@ -23,10 +23,22 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
   - Teks: `get_available_fonts` (daftar font yang tersedia di plugin).
   - Export: `set_export_settings` (pengaturan Export panel di node), `create_slice`.
   - REST API (butuh `FIGMA_ACCESS_TOKEN`): `get_comments`, `post_comment`, `get_file_versions`, `get_team_components`, `get_team_styles`. `post_comment` menulis komentar sungguhan yang langsung terlihat semua kolaborator.
-- Pemeriksaan tipe: devDependency `@figma/plugin-typings`, `tsconfig.plugin.json`, serta script `bun run typecheck` (server) dan `bun run typecheck:plugin` (plugin; saat ini masih ada 131 error lama).
+- 26 tool baru (total 159):
+  - Plugin: `save_version`, `set_image_properties` (ubah scaleMode, crop, skala tiling, rotasi, atau filter image fill tanpa upload ulang), `duplicate_page`, `get_style_usage`, `get_viewport`, `set_viewport`, `reorder_style`, `reorder_style_folder`.
+  - FigJam: `create_code_block`, `create_link_preview`.
+  - Variable: `extend_library_collection` (hanya paket Enterprise).
+  - Dev resources di plugin: `get_dev_resources`, `add_dev_resource`, `edit_dev_resource`, `delete_dev_resource`.
+  - Anotasi: `get_annotation_categories`, `create_annotation_category`.
+  - Measurement: `get_measurements`, `add_measurement`, `edit_measurement`, `delete_measurement`. Add/edit/delete hanya berjalan di Dev Mode, dan manifest plugin belum mendeklarasikan Dev Mode.
+  - REST API (butuh `FIGMA_ACCESS_TOKEN`): `get_team_projects`, `get_project_files`, `get_file_dev_resources`, `create_file_dev_resources`, `delete_file_dev_resource`. Create/delete mengubah dev resource sungguhan yang langsung terlihat semua kolaborator.
+- MCP resources baca-saja: `figma://document`, `figma://selection`, `figma://styles`, `figma://variables`, `figma://pages`.
+- `set_image_fill` menerima `imageTransform`, `scalingFactor`, `rotation`, dan `filters`; `find_nodes` menerima `allPages` untuk mencari di semua halaman.
+- Unit test `bun test` (`tests/simplify.test.ts`, `tests/figma_rest.test.ts`), `bun run lint` (`scripts/check-plugin.mjs`), dan `tsconfig.test.json`.
+- Pemeriksaan tipe: devDependency `@figma/plugin-typings`, `tsconfig.plugin.json`, serta script `bun run typecheck` (server) dan `bun run typecheck:plugin` (plugin; kini 0 error).
 
 ### Changed
 
+- `get_nodes_info` kini mengambil semua node dalam satu panggilan batch ke plugin, bukan satu panggilan per node; output tidak berubah.
 - `get_node_info` dan `get_nodes_info` menerima `detail: "full"` untuk data node yang lebih lengkap (constraints, effects, style id, bound variables, properti component, field auto-layout, detail stroke).
 - `create_text` menerima `fontFamily` dan `fontStyle`.
 - `set_layout_mode` mendukung mode `GRID` (`gridRowCount`, `gridColumnCount`, gap, ukuran track, `gridAutoTracks`), serta `counterAxisAlignContent` dan `strokesIncludedInLayout`.

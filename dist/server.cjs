@@ -498,7 +498,7 @@ async function figmaRequest(method, path2, token, body) {
     const shortDetail = String(detail).length > 500 ? `${String(detail).slice(0, 500)}\u2026` : detail;
     throw new Error(`Figma API ${res.status}: ${shortDetail}${hint}`);
   }
-  return JSON.parse(text);
+  return text ? JSON.parse(text) : {};
 }
 async function getFileNodes(token, fileKey, nodeIds, depth) {
   const params = new URLSearchParams({ ids: nodeIds.join(",") });
@@ -555,7 +555,47 @@ async function getTeamComponents(token, teamId, page = {}) {
 async function getTeamStyles(token, teamId, page = {}) {
   return figmaGet(`/teams/${encodeURIComponent(teamId)}/styles${teamLibraryQuery(page)}`, token);
 }
+async function getTeamProjects(token, teamId) {
+  return figmaGet(`/teams/${encodeURIComponent(teamId)}/projects`, token);
+}
+async function getProjectFiles(token, projectId, branchData = false) {
+  const query = branchData ? "?branch_data=true" : "";
+  return figmaGet(`/projects/${encodeURIComponent(projectId)}/files${query}`, token);
+}
+async function getDevResources(token, fileKey, nodeIds = []) {
+  const query = nodeIds.length ? `?${new URLSearchParams({ node_ids: nodeIds.join(",") })}` : "";
+  return figmaGet(`/files/${encodeURIComponent(fileKey)}/dev_resources${query}`, token);
+}
+async function createDevResources(token, devResources) {
+  return figmaRequest("POST", "/dev_resources", token, { dev_resources: devResources });
+}
+async function deleteDevResource(token, fileKey, devResourceId) {
+  return figmaRequest(
+    "DELETE",
+    `/files/${encodeURIComponent(fileKey)}/dev_resources/${encodeURIComponent(devResourceId)}`,
+    token
+  );
+}
+var DOWNLOAD_HOST_SUFFIXES = ["figma.com", "figmausercontent.com", "amazonaws.com"];
+function assertAllowedDownloadUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Download rejected: invalid URL ${url}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  const allowed = DOWNLOAD_HOST_SUFFIXES.some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`)
+  );
+  if (parsed.protocol !== "https:" || !allowed) {
+    throw new Error(
+      `Download rejected: ${url} is not an https URL on ${DOWNLOAD_HOST_SUFFIXES.join(", ")}`
+    );
+  }
+}
 async function downloadBytes(url) {
+  assertAllowedDownloadUrl(url);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Download failed (${res.status}) for ${url}`);
   return new Uint8Array(await res.arrayBuffer());
@@ -797,21 +837,13 @@ server.tool(
   },
   async ({ nodeIds, detail }) => {
     try {
-      const results = await Promise.all(
-        nodeIds.map(async (nodeId) => {
-          const result = await sendCommandToFigma("get_node_info", {
-            nodeId,
-            detail
-          });
-          return { nodeId, info: result };
-        })
-      );
+      const infos = nodeIds.length ? await getNodesInfoBatch(nodeIds, detail) : [];
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify(
-              results.map((result) => filterFigmaNode(result.info, detail))
+              infos.map((info) => filterFigmaNode(info, detail))
             )
           }
         ]
@@ -828,6 +860,28 @@ server.tool(
     }
   }
 );
+var BATCH_NODES_ERROR_PREFIX = "Error getting nodes info: ";
+async function getNodesInfoBatch(nodeIds, detail) {
+  let responses;
+  try {
+    responses = await sendCommandToFigma("get_nodes_info", { nodeIds, detail });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      message.startsWith(BATCH_NODES_ERROR_PREFIX) ? message.slice(BATCH_NODES_ERROR_PREFIX.length) : message
+    );
+  }
+  const found = Array.isArray(responses) ? responses : [];
+  let next = 0;
+  return nodeIds.map((nodeId) => {
+    const response = found[next];
+    if (!response || response.nodeId !== nodeId) {
+      throw new Error(`Node not found with ID: ${nodeId}`);
+    }
+    next++;
+    return response.document;
+  });
+}
 server.tool(
   "create_rectangle",
   "Create a new rectangle in Figma",
@@ -2915,6 +2969,35 @@ This detailed process ensures you correctly interpret the reaction data, prepare
     };
   }
 );
+var CODE_BLOCK_LANGUAGES = [
+  "TYPESCRIPT",
+  "CPP",
+  "RUBY",
+  "CSS",
+  "JAVASCRIPT",
+  "HTML",
+  "JSON",
+  "GRAPHQL",
+  "PYTHON",
+  "GO",
+  "SQL",
+  "SWIFT",
+  "KOTLIN",
+  "RUST",
+  "BASH",
+  "PLAINTEXT",
+  "DART"
+];
+var ANNOTATION_CATEGORY_COLORS = [
+  "yellow",
+  "orange",
+  "red",
+  "pink",
+  "violet",
+  "blue",
+  "teal",
+  "green"
+];
 function connectToFigma(port = 3055) {
   if (ws && ws.readyState === import_ws.default.OPEN) {
     logger.info("Already connected to Figma");
@@ -3087,9 +3170,42 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
     ws.send(JSON.stringify(request));
   });
 }
+var imageFilterValue = import_zod.z.number().min(-1).max(1);
+var imagePaintOptionsShape = {
+  imageTransform: import_zod.z.tuple([
+    import_zod.z.tuple([import_zod.z.number(), import_zod.z.number(), import_zod.z.number()]),
+    import_zod.z.tuple([import_zod.z.number(), import_zod.z.number(), import_zod.z.number()])
+  ]).optional().describe(
+    "CROP only: 2x3 affine matrix [[a, b, tx], [c, d, ty]] mapping the layer onto the image (normalized 0-1 image space). E.g. [[0.5, 0, 0.25], [0, 0.5, 0.25]] shows the center half. Defaults to identity [[1,0,0],[0,1,0]] when CROP is used without it"
+  ),
+  scalingFactor: import_zod.z.number().positive().optional().describe("TILE only: image scale for tiling (e.g. 0.5 = half size)"),
+  rotation: import_zod.z.union([import_zod.z.literal(0), import_zod.z.literal(90), import_zod.z.literal(180), import_zod.z.literal(270)]).optional().describe("FILL/FIT/TILE only: image rotation in degrees (CROP rotates via imageTransform)"),
+  filters: import_zod.z.object({
+    exposure: imageFilterValue.optional(),
+    contrast: imageFilterValue.optional(),
+    saturation: imageFilterValue.optional(),
+    temperature: imageFilterValue.optional(),
+    tint: imageFilterValue.optional(),
+    highlights: imageFilterValue.optional(),
+    shadows: imageFilterValue.optional()
+  }).strict().optional().describe("Image adjustments, each -1 to 1 (0 = unchanged)")
+};
+function checkImagePaintOptions(scaleMode, params) {
+  if (params.imageTransform !== void 0 && scaleMode !== "CROP") {
+    throw new Error("imageTransform only applies to scaleMode CROP");
+  }
+  if (params.scalingFactor !== void 0 && scaleMode !== "TILE") {
+    throw new Error("scalingFactor only applies to scaleMode TILE");
+  }
+  if (params.rotation !== void 0 && scaleMode === "CROP") {
+    throw new Error(
+      "rotation does not apply to scaleMode CROP (rotate via imageTransform)"
+    );
+  }
+}
 server.tool(
   "set_image_fill",
-  "Fill a node in Figma with an image from a local file path, a URL, or base64 data (replaces the node's existing fills)",
+  "Fill a node in Figma with an image from a local file path, a URL, or base64 data (replaces the node's existing fills). Optional imageTransform (CROP), scalingFactor (TILE), rotation and filters adjust the image; use set_image_properties to change them later without re-uploading.",
   {
     nodeId: import_zod.z.string().describe("The ID of the node to fill"),
     imagePath: import_zod.z.string().optional().describe(
@@ -3101,10 +3217,23 @@ server.tool(
     imageBase64: import_zod.z.string().optional().describe(
       "Base64-encoded image data, with or without a data: URI prefix (only when the image exists nowhere else)"
     ),
-    scaleMode: import_zod.z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("How the image fills the node (default: FILL)")
+    scaleMode: import_zod.z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("How the image fills the node (default: FILL)"),
+    ...imagePaintOptionsShape
   },
-  async ({ nodeId, imagePath, imageUrl, imageBase64, scaleMode }) => {
+  async ({
+    nodeId,
+    imagePath,
+    imageUrl,
+    imageBase64,
+    scaleMode,
+    imageTransform,
+    scalingFactor,
+    rotation,
+    filters
+  }) => {
     try {
+      const imageOptions = { imageTransform, scalingFactor, rotation, filters };
+      checkImagePaintOptions(scaleMode || "FILL", imageOptions);
       const sources = [imagePath, imageUrl, imageBase64].filter(
         (source) => source !== void 0 && source !== ""
       );
@@ -3137,7 +3266,8 @@ server.tool(
       const result = await sendCommandToFigma("set_image_fill", {
         nodeId,
         imageBase64: base64Data,
-        scaleMode: scaleMode || "FILL"
+        scaleMode: scaleMode || "FILL",
+        ...imageOptions
       });
       const typedResult = result;
       const sizeInfo = typedResult.imageWidth ? ` (${typedResult.imageWidth}x${typedResult.imageHeight})` : "";
@@ -4697,11 +4827,20 @@ server.tool(
     ),
     types: import_zod.z.array(import_zod.z.string()).optional().describe("Node types to include, e.g. ['FRAME', 'TEXT']"),
     limit: import_zod.z.number().int().min(1).max(1e3).optional().describe("Maximum number of results (default 100, max 1000)"),
-    includeHidden: import_zod.z.boolean().optional().describe("Include hidden nodes and nodes inside hidden parents (default true)")
+    includeHidden: import_zod.z.boolean().optional().describe("Include hidden nodes and nodes inside hidden parents (default true)"),
+    allPages: import_zod.z.boolean().optional().describe(
+      "Search every page instead of the current one (default false; cannot be combined with parentId). Results include pageId/pageName. Scanning stops at the first page boundary after more than `limit` matches; then `totalIsLowerBound` is true and `total` only counts the scanned pages (`pagesScanned` of `pageCount`). Loading all pages can be slow on large files"
+    )
   },
   async (params) => {
     try {
+      if (params.allPages && params.parentId) {
+        throw new Error("Use either parentId or allPages, not both");
+      }
       if (params.nameRegex !== void 0) {
+        if (/\([^)]*[+*][^)]*\)[+*{]/.test(params.nameRegex)) {
+          throw new Error("nameRegex rejected: nested quantifiers are not allowed");
+        }
         try {
           new RegExp(params.nameRegex);
         } catch (error) {
@@ -4710,7 +4849,11 @@ server.tool(
           );
         }
       }
-      const result = await sendCommandToFigma("find_nodes", params, 6e4);
+      const result = await sendCommandToFigma(
+        "find_nodes",
+        params,
+        params.allPages ? 12e4 : 6e4
+      );
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error finding nodes", error);
@@ -5286,6 +5429,389 @@ server.tool(
     }
   }
 );
+var saveVersionShape = {
+  title: import_zod.z.string().trim().min(1).describe("Version title (non-empty)"),
+  description: import_zod.z.string().optional().describe("Optional version description")
+};
+server.tool(
+  "save_version",
+  "Save a named version to the file's version history. Changes made just before may not be included; save after edits settle.",
+  saveVersionShape,
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("save_version", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error saving version", error);
+    }
+  }
+);
+server.tool(
+  "set_image_properties",
+  "Change scaleMode, crop (imageTransform), tiling scale, rotation or filters of an IMAGE fill already on a node, without re-uploading the image. Fields not given are kept (when still valid for the scaleMode); filters are merged into the existing ones.",
+  {
+    nodeId: import_zod.z.string().describe("Node whose image fill to change"),
+    paintIndex: import_zod.z.number().int().min(0).optional().describe("Index in the node's fills (default: first IMAGE fill)"),
+    scaleMode: import_zod.z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("New scale mode (default: keep current)"),
+    ...imagePaintOptionsShape
+  },
+  async (params) => {
+    try {
+      if (params.scaleMode !== void 0) {
+        checkImagePaintOptions(params.scaleMode, params);
+      }
+      const result = await sendCommandToFigma("set_image_properties", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting image properties", error);
+    }
+  }
+);
+server.tool(
+  "duplicate_page",
+  "Duplicate a page with all its content. Components on the copy become instances of the originals.",
+  {
+    pageId: import_zod.z.string().describe("ID of the page to duplicate"),
+    name: import_zod.z.string().optional().describe("Name for the copy (default: Figma's)")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("duplicate_page", params, 6e4);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error duplicating page", error);
+    }
+  }
+);
+server.tool(
+  "get_style_usage",
+  "List the nodes that use a style and in which field (fillStyleId, textStyleId, ...).",
+  {
+    styleId: import_zod.z.string().describe("Style ID"),
+    limit: import_zod.z.number().int().min(1).max(1e3).optional().describe("Maximum consumers returned (default 200, max 1000)")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("get_style_usage", params, 6e4);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting style usage", error);
+    }
+  }
+);
+server.tool(
+  "get_viewport",
+  "Get the current page's viewport: center, zoom (1 = 100%) and visible bounds.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_viewport");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting viewport", error);
+    }
+  }
+);
+server.tool(
+  "set_viewport",
+  "Move and/or zoom the viewport of the current page. To fit specific nodes, use set_focus or set_selections instead.",
+  {
+    center: import_zod.z.object({ x: import_zod.z.number(), y: import_zod.z.number() }).optional().describe("Canvas point to center on"),
+    zoom: import_zod.z.number().positive().optional().describe("Zoom level (1 = 100%, 0.5 = 50%)")
+  },
+  async (params) => {
+    try {
+      if (params.center === void 0 && params.zoom === void 0) {
+        throw new Error("Provide center and/or zoom");
+      }
+      const result = await sendCommandToFigma("set_viewport", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting viewport", error);
+    }
+  }
+);
+server.tool(
+  "reorder_style",
+  "Move a local style after another local style of the same type and folder in the styles list (Figma Design only).",
+  {
+    styleId: import_zod.z.string().describe("Local style to move"),
+    afterStyleId: import_zod.z.string().nullable().optional().describe("Style to place it after; omit or null to move it first")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("reorder_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error reordering style", error);
+    }
+  }
+);
+server.tool(
+  "reorder_style_folder",
+  "Move a local style folder after another folder with the same parent (Figma Design only). Nested folders use the full '/'-delimited name.",
+  {
+    styleType: import_zod.z.enum(["PAINT", "TEXT", "EFFECT", "GRID", "CUSTOM_ANIMATION"]).describe("Type of styles in the folder"),
+    folder: import_zod.z.string().min(1).describe("Folder to move, e.g. 'Brand/Primary'"),
+    afterFolder: import_zod.z.string().nullable().optional().describe("Folder to place it after; omit or null to move it first")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("reorder_style_folder", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error reordering style folder", error);
+    }
+  }
+);
+server.tool(
+  "create_code_block",
+  "Create a code block (FigJam only).",
+  {
+    code: import_zod.z.string().describe("Code content"),
+    codeLanguage: import_zod.z.enum(CODE_BLOCK_LANGUAGES).optional().describe("Syntax highlighting language (default: Figma's)"),
+    x: import_zod.z.number().optional().describe("X position (default 0)"),
+    y: import_zod.z.number().optional().describe("Y position (default 0)"),
+    parentId: import_zod.z.string().optional().describe("Optional parent node ID (default: current page)")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("create_code_block", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating code block", error);
+    }
+  }
+);
+var httpUrlSchema = import_zod.z.string().url().refine((value) => /^https?:\/\//i.test(value), {
+  message: "URL must use http or https"
+});
+server.tool(
+  "create_link_preview",
+  "Insert a link preview for a URL (FigJam only): an embed for oEmbed providers (e.g. YouTube), otherwise an unfurled card.",
+  {
+    url: httpUrlSchema.describe("http(s) URL to preview"),
+    x: import_zod.z.number().optional().describe("X position (default: where Figma places it)"),
+    y: import_zod.z.number().optional().describe("Y position (default: where Figma places it)"),
+    parentId: import_zod.z.string().optional().describe("Optional parent node ID (default: current page)")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("create_link_preview", params, 6e4);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating link preview", error);
+    }
+  }
+);
+server.tool(
+  "extend_library_collection",
+  "Create an extended variable collection (inherits variables, allows overrides) from a library collection key or a local collection ID. Enterprise plan only.",
+  {
+    name: import_zod.z.string().trim().min(1).describe("Name of the new extended collection"),
+    collectionKey: import_zod.z.string().optional().describe(
+      "Key of a library or local collection (see get_library_variable_collections)"
+    ),
+    collectionId: import_zod.z.string().optional().describe("ID of a local variable collection")
+  },
+  async (params) => {
+    try {
+      if (Boolean(params.collectionKey) === Boolean(params.collectionId)) {
+        throw new Error("Provide exactly one of collectionKey or collectionId");
+      }
+      const result = await sendCommandToFigma("extend_library_collection", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error extending variable collection", error);
+    }
+  }
+);
+server.tool(
+  "get_dev_resources",
+  "List dev resources (links to code, docs, tickets) attached to a node, including inherited ones.",
+  {
+    nodeId: import_zod.z.string().describe("Node ID"),
+    includeChildren: import_zod.z.boolean().optional().describe("Also include dev resources of descendants (default false)")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("get_dev_resources", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting dev resources", error);
+    }
+  }
+);
+server.tool(
+  "add_dev_resource",
+  "Attach a dev resource link to a node. Fails if the node already has a resource with that URL.",
+  {
+    nodeId: import_zod.z.string().describe("Node ID"),
+    url: httpUrlSchema.describe("http(s) URL of the resource"),
+    name: import_zod.z.string().optional().describe("Display name (default: derived from the URL by Figma)")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("add_dev_resource", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error adding dev resource", error);
+    }
+  }
+);
+server.tool(
+  "edit_dev_resource",
+  "Change the URL and/or name of a dev resource on a node. Inherited resources must be edited on their main component (inheritedNodeId).",
+  {
+    nodeId: import_zod.z.string().describe("Node ID"),
+    currentUrl: httpUrlSchema.describe("Current URL of the resource"),
+    url: httpUrlSchema.optional().describe("New http(s) URL"),
+    name: import_zod.z.string().optional().describe("New display name")
+  },
+  async (params) => {
+    try {
+      if (params.url === void 0 && params.name === void 0) {
+        throw new Error("Provide url and/or name to change");
+      }
+      const result = await sendCommandToFigma("edit_dev_resource", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error editing dev resource", error);
+    }
+  }
+);
+server.tool(
+  "delete_dev_resource",
+  "Remove a dev resource from a node by URL.",
+  {
+    nodeId: import_zod.z.string().describe("Node ID"),
+    url: httpUrlSchema.describe("URL of the resource to remove")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("delete_dev_resource", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting dev resource", error);
+    }
+  }
+);
+server.tool(
+  "get_annotation_categories",
+  "List the annotation categories in the file (id, label, color, isPreset). Use the id as categoryId in set_annotation.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_annotation_categories");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting annotation categories", error);
+    }
+  }
+);
+server.tool(
+  "create_annotation_category",
+  "Create an annotation category.",
+  {
+    label: import_zod.z.string().trim().min(1).describe("Category label"),
+    color: import_zod.z.enum(ANNOTATION_CATEGORY_COLORS).describe("Category color")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("create_annotation_category", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating annotation category", error);
+    }
+  }
+);
+var measurementSideSchema = import_zod.z.enum(["TOP", "RIGHT", "BOTTOM", "LEFT"]);
+var measurementOffsetSchema = import_zod.z.discriminatedUnion("type", [
+  import_zod.z.object({
+    type: import_zod.z.literal("INNER"),
+    relative: import_zod.z.number().describe("Position along the measured edge, relative")
+  }),
+  import_zod.z.object({
+    type: import_zod.z.literal("OUTER"),
+    fixed: import_zod.z.number().describe("Fixed distance outside the nodes, in pixels")
+  })
+]);
+server.tool(
+  "get_measurements",
+  "List Dev Mode measurements on the current page, optionally only those touching a node. Read-only and works in the design editor; creating/editing measurements is Dev Mode only and not available with the current plugin manifest.",
+  {
+    nodeId: import_zod.z.string().optional().describe("Only measurements that start or end at this node")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("get_measurements", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting measurements", error);
+    }
+  }
+);
+server.tool(
+  "add_measurement",
+  "Add a measurement between two nodes on the current page. Both sides must be on the same axis (LEFT/RIGHT or TOP/BOTTOM). Dev Mode only \u2014 not available with the current plugin manifest (editorType figma/figjam); will return an error.",
+  {
+    startNodeId: import_zod.z.string().describe("Start node ID"),
+    startSide: measurementSideSchema.describe("Edge of the start node"),
+    endNodeId: import_zod.z.string().describe("End node ID"),
+    endSide: measurementSideSchema.describe("Edge of the end node"),
+    offset: measurementOffsetSchema.optional().describe("Label offset (default { type: 'INNER', relative: 0 })"),
+    freeText: import_zod.z.string().optional().describe("Custom label text")
+  },
+  async (params) => {
+    try {
+      const horizontal = (side) => side === "LEFT" || side === "RIGHT";
+      if (horizontal(params.startSide) !== horizontal(params.endSide)) {
+        throw new Error(
+          "startSide and endSide must be on the same axis (LEFT/RIGHT or TOP/BOTTOM)"
+        );
+      }
+      const result = await sendCommandToFigma("add_measurement", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error adding measurement", error);
+    }
+  }
+);
+server.tool(
+  "edit_measurement",
+  "Change a measurement's offset and/or label text. Dev Mode only \u2014 not available with the current plugin manifest (editorType figma/figjam); will return an error.",
+  {
+    measurementId: import_zod.z.string().describe("Measurement ID (see get_measurements)"),
+    offset: measurementOffsetSchema.optional().describe("New label offset"),
+    freeText: import_zod.z.string().optional().describe("New label text")
+  },
+  async (params) => {
+    try {
+      if (params.offset === void 0 && params.freeText === void 0) {
+        throw new Error("Provide offset and/or freeText to change");
+      }
+      const result = await sendCommandToFigma("edit_measurement", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error editing measurement", error);
+    }
+  }
+);
+server.tool(
+  "delete_measurement",
+  "Delete a measurement from the current page. Dev Mode only \u2014 not available with the current plugin manifest (editorType figma/figjam); will return an error.",
+  {
+    measurementId: import_zod.z.string().describe("Measurement ID (see get_measurements)")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("delete_measurement", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting measurement", error);
+    }
+  }
+);
 var DESIGN_SPEC_NOTE = "Spec format: each node references shared values in `styles` by id (layout*, fill*, stroke*, effect*, text*). Layout values are CSS-like (flex, gap, padding, sizing fill/hug/fixed). `exportAs: svg` marks icons/vectors to export as assets instead of rebuilding them; `assets` lists icons and image fills to download with download_design_assets. `designStyles` and `variables` give design-token names to map onto the project's theme.";
 function formatRestVariableValue(value) {
   if (value && typeof value === "object") {
@@ -5751,6 +6277,218 @@ server.tool(
       return errorResult("Error reading team styles", error);
     }
   }
+);
+var restNodeIdSchema = import_zod.z.string().regex(/^[A-Za-z0-9:;_-]+$/, "nodeId must look like 1:2, 1-2 or I1:2;3:4");
+server.tool(
+  "get_team_projects",
+  "List the projects of a team through the REST API (requires FIGMA_ACCESS_TOKEN with projects:read). Use a project id with get_project_files.",
+  {
+    teamId: teamPageSchema.teamId
+  },
+  async ({ teamId }) => {
+    try {
+      const token = requireFigmaToken();
+      const data = await getTeamProjects(token, teamId);
+      const projects = (data.projects || []).map((p) => ({
+        id: String(p.id),
+        name: p.name
+      }));
+      return jsonResult({
+        teamId,
+        teamName: data.name,
+        count: projects.length,
+        projects
+      });
+    } catch (error) {
+      return errorResult("Error reading team projects", error);
+    }
+  }
+);
+server.tool(
+  "get_project_files",
+  "List the files of a project through the REST API (requires FIGMA_ACCESS_TOKEN with projects:read). Use a file key with the other REST tools.",
+  {
+    projectId: import_zod.z.string().regex(/^\d+$/, "projectId must be numeric").describe("Project ID, from get_team_projects or figma.com/files/project/<projectId>"),
+    branchData: import_zod.z.boolean().optional().describe("Also list the branches of each file (default false)")
+  },
+  async ({ projectId, branchData }) => {
+    try {
+      const token = requireFigmaToken();
+      const data = await getProjectFiles(token, projectId, branchData === true);
+      const files = (data.files || []).map((f) => ({
+        key: f.key,
+        name: f.name,
+        lastModified: f.last_modified,
+        thumbnailUrl: f.thumbnail_url,
+        branches: f.branches
+      }));
+      return jsonResult({
+        projectId,
+        projectName: data.name,
+        count: files.length,
+        files
+      });
+    } catch (error) {
+      return errorResult("Error reading project files", error);
+    }
+  }
+);
+server.tool(
+  "get_file_dev_resources",
+  "List the dev resources (links shown in Dev Mode) of a Figma file through the REST API (requires FIGMA_ACCESS_TOKEN with file_dev_resources:read). Optionally only for some nodes.",
+  {
+    ...restFileSchema,
+    nodeIds: import_zod.z.array(restNodeIdSchema).optional().describe("Only return dev resources attached to these nodes (e.g. 1:2 or 1-2)")
+  },
+  async ({ fileUrl, fileKey, nodeIds }) => {
+    try {
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      const data = await getDevResources(
+        token,
+        target.fileKey,
+        (nodeIds || []).map(normalizeNodeId)
+      );
+      const devResources = (data.dev_resources || []).map((r) => ({
+        id: r.id,
+        name: r.name,
+        url: r.url,
+        nodeId: r.node_id
+      }));
+      return jsonResult({
+        fileKey: target.fileKey,
+        count: devResources.length,
+        devResources
+      });
+    } catch (error) {
+      return errorResult("Error reading dev resources", error);
+    }
+  }
+);
+server.tool(
+  "create_file_dev_resources",
+  "Attach REAL dev resources (links shown in Dev Mode) to nodes of a Figma file through the REST API. They are immediately visible to every collaborator; only use it when the user explicitly asks. Requires FIGMA_ACCESS_TOKEN with file_dev_resources:write.",
+  {
+    ...restFileSchema,
+    devResources: import_zod.z.array(
+      import_zod.z.object({
+        nodeId: restNodeIdSchema.describe("Node to attach the link to (e.g. 1:2 or 1-2)"),
+        name: import_zod.z.string().min(1).max(500).describe("Link title"),
+        url: httpUrlSchema.describe("Link URL (http or https)")
+      })
+    ).min(1).max(50).describe("Dev resources to create (max 50)")
+  },
+  async ({ fileUrl, fileKey, devResources }) => {
+    try {
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      const data = await createDevResources(
+        token,
+        devResources.map((r) => ({
+          name: r.name,
+          url: r.url,
+          file_key: target.fileKey,
+          node_id: normalizeNodeId(r.nodeId)
+        }))
+      );
+      const created = (data.links_created || []).map((r) => ({
+        id: r.id,
+        name: r.name,
+        url: r.url,
+        nodeId: r.node_id
+      }));
+      const errors = (data.errors || []).map((e) => ({
+        nodeId: e.node_id,
+        error: e.error
+      }));
+      return jsonResult({
+        fileKey: target.fileKey,
+        createdCount: created.length,
+        created,
+        errors
+      });
+    } catch (error) {
+      return errorResult("Error creating dev resources", error);
+    }
+  }
+);
+server.tool(
+  "delete_file_dev_resource",
+  "Permanently delete a dev resource (Dev Mode link) from a Figma file through the REST API; only use it when the user explicitly asks. Requires FIGMA_ACCESS_TOKEN with file_dev_resources:write.",
+  {
+    ...restFileSchema,
+    devResourceId: import_zod.z.string().regex(REST_KEY_PATTERN, "devResourceId may only contain letters, digits, _ and -").describe("Dev resource id, from get_file_dev_resources")
+  },
+  async ({ fileUrl, fileKey, devResourceId }) => {
+    try {
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      await deleteDevResource(token, target.fileKey, devResourceId);
+      return jsonResult({
+        fileKey: target.fileKey,
+        devResourceId,
+        deleted: true
+      });
+    } catch (error) {
+      return errorResult("Error deleting dev resource", error);
+    }
+  }
+);
+function registerPluginResource(name, uri, description, command) {
+  server.resource(
+    name,
+    uri,
+    { description, mimeType: "application/json" },
+    async (resourceUri) => {
+      let result;
+      try {
+        result = await sendCommandToFigma(command);
+      } catch (error) {
+        throw new Error(
+          `Could not read ${uri} from the Figma plugin: ${(error instanceof Error ? error.message : String(error)).replace(/\.+$/, "")}. Make sure the relay is running, the plugin is open in Figma and join_channel was called.`
+        );
+      }
+      return {
+        contents: [
+          {
+            uri: resourceUri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    }
+  );
+}
+registerPluginResource(
+  "document",
+  "figma://document",
+  "Current Figma document and page info (same as get_document_info)",
+  "get_document_info"
+);
+registerPluginResource(
+  "selection",
+  "figma://selection",
+  "Current selection in Figma (same as get_selection)",
+  "get_selection"
+);
+registerPluginResource(
+  "styles",
+  "figma://styles",
+  "Local paint, text, effect and grid styles (same as get_styles)",
+  "get_styles"
+);
+registerPluginResource(
+  "variables",
+  "figma://variables",
+  "Local variable collections and variables (same as get_local_variables)",
+  "get_local_variables"
+);
+registerPluginResource(
+  "pages",
+  "figma://pages",
+  "Pages of the current document (same as get_pages)",
+  "get_pages"
 );
 server.prompt(
   "design_to_code",
