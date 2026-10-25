@@ -29,8 +29,10 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
   - Variable: `extend_library_collection` (hanya paket Enterprise).
   - Dev resources di plugin: `get_dev_resources`, `add_dev_resource`, `edit_dev_resource`, `delete_dev_resource`.
   - Anotasi: `get_annotation_categories`, `create_annotation_category`.
-  - Measurement: `get_measurements`, `add_measurement`, `edit_measurement`, `delete_measurement`. Add/edit/delete hanya berjalan di Dev Mode, dan manifest plugin belum mendeklarasikan Dev Mode.
+  - Measurement: `get_measurements`, `add_measurement`, `edit_measurement`, `delete_measurement`. Add/edit/delete hanya berjalan di Dev Mode, jadi pakai varian plugin Dev Mode (lihat di bawah).
   - REST API (butuh `FIGMA_ACCESS_TOKEN`): `get_team_projects`, `get_project_files`, `get_file_dev_resources`, `create_file_dev_resources`, `delete_file_dev_resource`. Create/delete mengubah dev resource sungguhan yang langsung terlihat semua kolaborator.
+- Varian plugin khusus Dev Mode lewat `bun run build:plugin-dev` (`scripts/build-dev-plugin.mjs` → `dist/opencode_mcp_plugin_dev/`, editorType `dev` + capability `inspect`) untuk menjalankan tool measurement tanpa mengubah plugin utama figma+figjam. Butuh seat Full/Dev (paket berbayar), belum diuji di Figma.
+- README kini mendokumentasikan batasan paket Figma (subbagian "Plan limitations" dan penanda di daftar tool): measurement add/edit/delete butuh paket berbayar dengan seat Full/Dev, menambah mode variable butuh paket berbayar (Free hanya 1 mode), `extend_library_collection` hanya Enterprise, dan dev resources di plugin kemungkinan butuh paket berbayar (403 di akun Free).
 - MCP resources baca-saja: `figma://document`, `figma://selection`, `figma://styles`, `figma://variables`, `figma://pages`.
 - `set_image_fill` menerima `imageTransform`, `scalingFactor`, `rotation`, dan `filters`; `find_nodes` menerima `allPages` untuk mencari di semua halaman.
 - Unit test `bun test` (`tests/simplify.test.ts`, `tests/figma_rest.test.ts`), `bun run lint` (`scripts/check-plugin.mjs`), dan `tsconfig.test.json`.
