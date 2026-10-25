@@ -161,12 +161,12 @@ async function handleCommand(command, params) {
       if (!params || !params.nodeId) {
         throw new Error("Missing nodeId parameter");
       }
-      return await getNodeInfo(params.nodeId);
+      return await getNodeInfo(params.nodeId, params.detail);
     case "get_nodes_info":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
       }
-      return await getNodesInfo(params.nodeIds);
+      return await getNodesInfo(params.nodeIds, params.detail);
     case "read_my_design":
       return await readMyDesign();
     case "create_rectangle":
@@ -425,6 +425,44 @@ async function handleCommand(command, params) {
       return await setSharedPluginDataCommand(params);
     case "get_shared_plugin_data":
       return await getSharedPluginDataCommand(params);
+    case "update_variable":
+      return await updateVariable(params);
+    case "update_variable_collection":
+      return await updateVariableCollection(params);
+    case "manage_variable_modes":
+      return await manageVariableModes(params);
+    case "set_variable_mode":
+      return await setVariableMode(params);
+    case "import_style_by_key":
+      return await importStyleByKey(params);
+    case "import_variable_by_key":
+      return await importVariableByKey(params);
+    case "get_library_variable_collections":
+      return await getLibraryVariableCollections();
+    case "get_library_variables":
+      return await getLibraryVariables(params);
+    case "edit_component_property":
+      return await editComponentProperty(params);
+    case "delete_component_property":
+      return await deleteComponentProperty(params);
+    case "reset_instance_overrides":
+      return await resetInstanceOverrides(params);
+    case "set_fills":
+      return await setFills(params);
+    case "get_available_fonts":
+      return await getAvailableFonts(params);
+    case "set_layout_child":
+      return await setLayoutChild(params);
+    case "create_grid_style":
+      return await createGridStyle(params);
+    case "update_grid_style":
+      return await updateGridStyle(params);
+    case "apply_grid_style":
+      return await applyGridStyle(params);
+    case "set_export_settings":
+      return await setExportSettings(params);
+    case "create_slice":
+      return await createSlice(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -498,8 +536,9 @@ function rgbaToHex(color) {
   );
 }
 
-function filterFigmaNode(node) {
-  if (node.type === "VECTOR") {
+// liveIndex (id -> live node) is only passed for detail "full"
+function filterFigmaNode(node, liveIndex) {
+  if (node.type === "VECTOR" && !liveIndex) {
     return null;
   }
 
@@ -512,7 +551,7 @@ function filterFigmaNode(node) {
   if (node.fills && node.fills.length > 0) {
     filtered.fills = node.fills.map((fill) => {
       var processedFill = Object.assign({}, fill);
-      delete processedFill.boundVariables;
+      if (!liveIndex) delete processedFill.boundVariables;
       delete processedFill.imageRef;
 
       if (processedFill.gradientStops) {
@@ -522,7 +561,7 @@ function filterFigmaNode(node) {
             if (processedStop.color) {
               processedStop.color = rgbaToHex(processedStop.color);
             }
-            delete processedStop.boundVariables;
+            if (!liveIndex) delete processedStop.boundVariables;
             return processedStop;
           },
         );
@@ -539,7 +578,7 @@ function filterFigmaNode(node) {
   if (node.strokes && node.strokes.length > 0) {
     filtered.strokes = node.strokes.map((stroke) => {
       var processedStroke = Object.assign({}, stroke);
-      delete processedStroke.boundVariables;
+      if (!liveIndex) delete processedStroke.boundVariables;
       if (processedStroke.color) {
         processedStroke.color = rgbaToHex(processedStroke.color);
       }
@@ -571,10 +610,14 @@ function filterFigmaNode(node) {
     };
   }
 
+  if (liveIndex && liveIndex[node.id]) {
+    Object.assign(filtered, collectFullNodeProps(liveIndex[node.id]));
+  }
+
   if (node.children) {
     filtered.children = node.children
       .map((child) => {
-        return filterFigmaNode(child);
+        return filterFigmaNode(child, liveIndex);
       })
       .filter((child) => {
         return child !== null;
@@ -584,7 +627,7 @@ function filterFigmaNode(node) {
   return filtered;
 }
 
-async function getNodeInfo(nodeId) {
+async function getNodeInfo(nodeId, detail) {
   const node = await figma.getNodeByIdAsync(nodeId);
 
   if (!node) {
@@ -595,10 +638,120 @@ async function getNodeInfo(nodeId) {
     format: "JSON_REST_V1",
   });
 
-  return filterFigmaNode(response.document);
+  return filterFigmaNode(response.document, liveIndexForDetail(node, detail));
 }
 
-async function getNodesInfo(nodeIds) {
+function liveIndexForDetail(node, detail) {
+  if (detail === undefined || detail === "basic") return null;
+  if (detail !== "full") {
+    throw new Error('detail must be "basic" or "full"');
+  }
+  return indexLiveNodes(node, {});
+}
+
+function indexLiveNodes(node, index) {
+  index[node.id] = node;
+  if ("children" in node) {
+    for (const child of node.children) {
+      indexLiveNodes(child, index);
+    }
+  }
+  return index;
+}
+
+// Live-node properties added by get_node_info with detail "full"
+const FULL_DETAIL_KEYS = [
+  "visible",
+  "locked",
+  "opacity",
+  "rotation",
+  "blendMode",
+  "isMask",
+  "constraints",
+  "effects",
+  "fillStyleId",
+  "strokeStyleId",
+  "effectStyleId",
+  "textStyleId",
+  "boundVariables",
+  "explicitVariableModes",
+  "componentProperties",
+  "componentPropertyDefinitions",
+  "componentPropertyReferences",
+  "layoutMode",
+  "layoutWrap",
+  "paddingLeft",
+  "paddingRight",
+  "paddingTop",
+  "paddingBottom",
+  "itemSpacing",
+  "counterAxisSpacing",
+  "primaryAxisAlignItems",
+  "counterAxisAlignItems",
+  "layoutSizingHorizontal",
+  "layoutSizingVertical",
+  "layoutPositioning",
+  "layoutGrow",
+  "layoutAlign",
+  "minWidth",
+  "maxWidth",
+  "minHeight",
+  "maxHeight",
+  "clipsContent",
+  "strokeWeight",
+  "strokeAlign",
+  "dashPattern",
+];
+
+const MAX_VECTOR_PATH_DATA = 200;
+
+// figma.mixed is a symbol and cannot be posted to the UI
+function serializeFigmaValue(value) {
+  if (value === figma.mixed) return "mixed";
+  if (typeof value === "symbol" || typeof value === "function") {
+    return undefined;
+  }
+  if (Array.isArray(value)) return value.map(serializeFigmaValue);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value)) {
+      const serialized = serializeFigmaValue(value[key]);
+      if (serialized !== undefined) out[key] = serialized;
+    }
+    return out;
+  }
+  return value;
+}
+
+function collectFullNodeProps(node) {
+  const source = /** @type {any} */ (node);
+  const props = {};
+  for (const key of FULL_DETAIL_KEYS) {
+    if (!(key in source)) continue;
+    let value;
+    try {
+      value = source[key];
+    } catch (error) {
+      // e.g. componentPropertyDefinitions on a variant inside a component set
+      continue;
+    }
+    const serialized = serializeFigmaValue(value);
+    if (serialized !== undefined) props[key] = serialized;
+  }
+  if (Array.isArray(source.vectorPaths)) {
+    props.vectorPathCount = source.vectorPaths.length;
+    props.vectorPaths = source.vectorPaths.map((path) => ({
+      windingRule: path.windingRule,
+      data:
+        path.data.length > MAX_VECTOR_PATH_DATA
+          ? path.data.slice(0, MAX_VECTOR_PATH_DATA) + "…"
+          : path.data,
+    }));
+  }
+  return props;
+}
+
+async function getNodesInfo(nodeIds, detail) {
   try {
     // Load all nodes in parallel
     const nodes = await Promise.all(
@@ -616,7 +769,10 @@ async function getNodesInfo(nodeIds) {
         });
         return {
           nodeId: node.id,
-          document: filterFigmaNode(response.document),
+          document: filterFigmaNode(
+            response.document,
+            liveIndexForDetail(node, detail),
+          ),
         };
       }),
     );
@@ -1024,6 +1180,8 @@ async function createText(params) {
     fontColor = { r: 0, g: 0, b: 0, a: 1 }, // Default to black
     name = "",
     parentId,
+    fontFamily,
+    fontStyle,
   } = params || {};
 
   // Map common font weights to Figma font styles
@@ -1052,21 +1210,50 @@ async function createText(params) {
     }
   };
 
+  let fontName = {
+    family: fontFamily || "Inter",
+    style: fontStyle || getFontStyle(fontWeight),
+  };
+  // An explicitly requested font must load; check before creating the node
+  if (fontStyle) {
+    await loadFontOrThrow(fontName);
+  } else if (fontFamily) {
+    // Families differ in naming ("Semi Bold" vs "SemiBold"); try variants
+    const weightStyle = fontName.style;
+    const candidates = [weightStyle];
+    const compact = weightStyle.replace(/ /g, "");
+    if (candidates.indexOf(compact) === -1) candidates.push(compact);
+    if (candidates.indexOf("Regular") === -1) candidates.push("Regular");
+    let loaded = null;
+    for (const style of candidates) {
+      try {
+        await figma.loadFontAsync({ family: fontFamily, style });
+        loaded = { family: fontFamily, style };
+        break;
+      } catch (error) {
+        // try the next candidate style
+      }
+    }
+    if (!loaded) {
+      throw new Error(
+        `Font "${fontFamily}" is not available in styles: ${candidates.join(", ")}`,
+      );
+    }
+    fontName = loaded;
+  }
+
   const textNode = figma.createText();
   textNode.x = x;
   textNode.y = y;
   textNode.name = name || text;
   try {
-    await figma.loadFontAsync({
-      family: "Inter",
-      style: getFontStyle(fontWeight),
-    });
-    textNode.fontName = { family: "Inter", style: getFontStyle(fontWeight) };
+    await figma.loadFontAsync(fontName);
+    textNode.fontName = fontName;
     textNode.fontSize = parseInt(fontSize);
   } catch (error) {
     console.error("Error setting font size", error);
   }
-  setCharacters(textNode, text);
+  await setCharacters(textNode, text);
 
   // Set text color
   const paintStyle = {
@@ -2477,6 +2664,11 @@ async function setTextProperties(params) {
     textAlignHorizontal,
     textAlignVertical,
     textAutoResize,
+    hyperlink,
+    listType,
+    indentation,
+    textTruncation,
+    maxLines,
   } = params || {};
   if (!nodeId) {
     throw new Error("Missing nodeId parameter");
@@ -2489,6 +2681,55 @@ async function setTextProperties(params) {
     throw new Error(`Node type ${node.type} is not TEXT`);
   }
   // Validate before any mutation so a bad value doesn't leave partial edits
+  if (hyperlink !== undefined && hyperlink !== null) {
+    if (
+      (hyperlink.type !== "URL" && hyperlink.type !== "NODE") ||
+      typeof hyperlink.value !== "string" ||
+      hyperlink.value === ""
+    ) {
+      throw new Error(
+        'hyperlink must be { type: "URL" | "NODE", value } or null to remove it',
+      );
+    }
+    if (hyperlink.type === "URL" && !/^(https?:|mailto:)/i.test(hyperlink.value)) {
+      throw new Error("hyperlink URL must start with http:, https: or mailto:");
+    }
+    if (hyperlink.type === "NODE") {
+      const target = await figma.getNodeByIdAsync(hyperlink.value);
+      if (!target) {
+        throw new Error(`hyperlink target node not found: ${hyperlink.value}`);
+      }
+    }
+  }
+  if (
+    listType !== undefined &&
+    ["NONE", "ORDERED", "UNORDERED"].indexOf(listType) === -1
+  ) {
+    throw new Error(`Invalid listType: ${listType}`);
+  }
+  if (
+    indentation !== undefined &&
+    !(Number.isInteger(indentation) && indentation >= 0)
+  ) {
+    throw new Error("indentation must be an integer >= 0");
+  }
+  if (
+    textTruncation !== undefined &&
+    textTruncation !== "DISABLED" &&
+    textTruncation !== "ENDING"
+  ) {
+    throw new Error(`Invalid textTruncation: ${textTruncation}`);
+  }
+  if (
+    maxLines !== undefined &&
+    maxLines !== null &&
+    !(Number.isInteger(maxLines) && maxLines >= 1)
+  ) {
+    throw new Error("maxLines must be an integer >= 1, or null to disable it");
+  }
+  if (typeof maxLines === "number" && textTruncation === "DISABLED") {
+    throw new Error('maxLines needs textTruncation "ENDING", not "DISABLED"');
+  }
   const lineHeightValue =
     lineHeight !== undefined ? toLineHeight(lineHeight) : undefined;
   const letterSpacingValue =
@@ -2509,6 +2750,9 @@ async function setTextProperties(params) {
     : length;
   if (hasRange && from >= to) {
     throw new Error(`Invalid range ${from}-${to}`);
+  }
+  if ((listType !== undefined || indentation !== undefined) && length === 0) {
+    throw new Error("listType/indentation need a non-empty text node");
   }
 
   if (fontFamily !== undefined || fontStyle !== undefined) {
@@ -2556,6 +2800,20 @@ async function setTextProperties(params) {
     if (hasRange) node.setRangeFills(from, to, fills);
     else node.fills = fills;
   }
+  if (hyperlink !== undefined) {
+    const link = hyperlink
+      ? { type: hyperlink.type, value: hyperlink.value }
+      : null;
+    if (hasRange) node.setRangeHyperlink(from, to, link);
+    else node.hyperlink = link;
+  }
+  // List options and indentation only have range setters
+  if (listType !== undefined || indentation !== undefined) {
+    if (listType !== undefined)
+      node.setRangeListOptions(from, to, { type: listType });
+    if (indentation !== undefined)
+      node.setRangeIndentation(from, to, indentation);
+  }
 
   // Node-level only properties
   if (paragraphSpacing !== undefined)
@@ -2565,6 +2823,11 @@ async function setTextProperties(params) {
   if (textAlignVertical !== undefined)
     node.textAlignVertical = textAlignVertical;
   if (textAutoResize !== undefined) node.textAutoResize = textAutoResize;
+  // maxLines only applies with ENDING truncation, so set truncation first
+  if (textTruncation !== undefined) node.textTruncation = textTruncation;
+  else if (typeof maxLines === "number" && node.textTruncation !== "ENDING")
+    node.textTruncation = "ENDING";
+  if (maxLines !== undefined) node.maxLines = maxLines;
 
   return {
     id: node.id,
@@ -2581,6 +2844,9 @@ async function setTextProperties(params) {
     textAlignHorizontal: node.textAlignHorizontal,
     textAlignVertical: node.textAlignVertical,
     textAutoResize: node.textAutoResize,
+    hyperlink: node.hyperlink === figma.mixed ? "mixed" : node.hyperlink,
+    textTruncation: node.textTruncation,
+    maxLines: node.maxLines,
   };
 }
 
@@ -5625,20 +5891,192 @@ async function setLayoutMode(params) {
     throw new Error(`Node type ${node.type} does not support layoutMode`);
   }
 
+  const p = params || {};
+  const isGrid = layoutMode === "GRID";
+  const isFlex = layoutMode === "HORIZONTAL" || layoutMode === "VERTICAL";
+  // Validate before any mutation so a bad value doesn't leave partial edits
+  const gridKeys = [
+    "gridRowCount",
+    "gridColumnCount",
+    "gridRowGap",
+    "gridColumnGap",
+    "gridRowSizes",
+    "gridColumnSizes",
+    "gridAutoTracks",
+  ];
+  for (const key of gridKeys) {
+    if (p[key] !== undefined && !isGrid) {
+      throw new Error(`${key} requires layoutMode GRID`);
+    }
+  }
+  if (p.counterAxisAlignContent !== undefined) {
+    if (!isFlex || layoutWrap !== "WRAP") {
+      throw new Error(
+        "counterAxisAlignContent requires a HORIZONTAL/VERTICAL layout with layoutWrap WRAP",
+      );
+    }
+    if (["AUTO", "SPACE_BETWEEN"].indexOf(p.counterAxisAlignContent) === -1) {
+      throw new Error(
+        `Invalid counterAxisAlignContent: ${p.counterAxisAlignContent}`,
+      );
+    }
+  }
+  if (p.strokesIncludedInLayout !== undefined && layoutMode === "NONE") {
+    throw new Error("strokesIncludedInLayout requires an auto-layout mode");
+  }
+  const rowSizes =
+    p.gridRowSizes !== undefined
+      ? makeGridTrackSizes("gridRowSizes", p.gridRowSizes)
+      : undefined;
+  const columnSizes =
+    p.gridColumnSizes !== undefined
+      ? makeGridTrackSizes("gridColumnSizes", p.gridColumnSizes)
+      : undefined;
+  let rowCount;
+  let columnCount;
+  if (isGrid) {
+    const checkCount = (key) => {
+      if (p[key] !== undefined && !(Number.isInteger(p[key]) && p[key] >= 1)) {
+        throw new Error(`${key} must be an integer >= 1`);
+      }
+    };
+    checkCount("gridRowCount");
+    checkCount("gridColumnCount");
+    for (const key of ["gridRowGap", "gridColumnGap"]) {
+      if (p[key] !== undefined && !(isFinite(Number(p[key])) && p[key] >= 0)) {
+        throw new Error(`${key} must be a number >= 0`);
+      }
+    }
+    if (
+      p.gridAutoTracks !== undefined &&
+      ["NONE", "ROWS"].indexOf(p.gridAutoTracks) === -1
+    ) {
+      throw new Error(`Invalid gridAutoTracks: ${p.gridAutoTracks}`);
+    }
+    // With ROWS the row count is managed by Figma and its setter throws
+    const autoRows =
+      p.gridAutoTracks !== undefined
+        ? p.gridAutoTracks === "ROWS"
+        : node.layoutMode === "GRID" && node.gridAutoTracks === "ROWS";
+    if (autoRows && (p.gridRowCount !== undefined || rowSizes)) {
+      throw new Error(
+        'gridRowCount/gridRowSizes cannot be set while gridAutoTracks is "ROWS"; pass gridAutoTracks "NONE"',
+      );
+    }
+    rowCount =
+      p.gridRowCount !== undefined
+        ? p.gridRowCount
+        : rowSizes
+          ? rowSizes.length
+          : undefined;
+    columnCount =
+      p.gridColumnCount !== undefined
+        ? p.gridColumnCount
+        : columnSizes
+          ? columnSizes.length
+          : undefined;
+    if (rowSizes && rowSizes.length !== rowCount) {
+      throw new Error(
+        `gridRowSizes has ${rowSizes.length} entries but gridRowCount is ${rowCount}`,
+      );
+    }
+    if (columnSizes && columnSizes.length !== columnCount) {
+      throw new Error(
+        `gridColumnSizes has ${columnSizes.length} entries but gridColumnCount is ${columnCount}`,
+      );
+    }
+  }
+
   // Set layout mode
   node.layoutMode = layoutMode;
 
-  // Set layoutWrap if applicable
-  if (layoutMode !== "NONE") {
+  // layoutWrap only exists for HORIZONTAL/VERTICAL auto-layout
+  if (isFlex) {
     node.layoutWrap = layoutWrap;
   }
+  if (p.counterAxisAlignContent !== undefined) {
+    node.counterAxisAlignContent = p.counterAxisAlignContent;
+  }
+  if (p.strokesIncludedInLayout !== undefined) {
+    node.strokesIncludedInLayout = Boolean(p.strokesIncludedInLayout);
+  }
 
-  return {
+  if (isGrid) {
+    if (p.gridAutoTracks !== undefined) node.gridAutoTracks = p.gridAutoTracks;
+    // Track counts first, so the size arrays below match them
+    if (rowCount !== undefined) node.gridRowCount = Number(rowCount);
+    if (columnCount !== undefined) node.gridColumnCount = Number(columnCount);
+    if (p.gridRowGap !== undefined) node.gridRowGap = Number(p.gridRowGap);
+    if (p.gridColumnGap !== undefined)
+      node.gridColumnGap = Number(p.gridColumnGap);
+    if (rowSizes) applyGridTrackSizes(node.gridRowSizes, rowSizes, "row");
+    if (columnSizes)
+      applyGridTrackSizes(node.gridColumnSizes, columnSizes, "column");
+  }
+
+  /** @type {any} */
+  const result = {
     id: node.id,
     name: node.name,
     layoutMode: node.layoutMode,
     layoutWrap: node.layoutWrap,
+    strokesIncludedInLayout: node.strokesIncludedInLayout,
   };
+  if (isFlex && node.layoutWrap === "WRAP") {
+    result.counterAxisAlignContent = node.counterAxisAlignContent;
+  }
+  if (isGrid) {
+    result.gridRowCount = node.gridRowCount;
+    result.gridColumnCount = node.gridColumnCount;
+    result.gridRowGap = node.gridRowGap;
+    result.gridColumnGap = node.gridColumnGap;
+    result.gridAutoTracks = node.gridAutoTracks;
+    result.gridRowSizes = serializeGridTrackSizes(node.gridRowSizes);
+    result.gridColumnSizes = serializeGridTrackSizes(node.gridColumnSizes);
+  }
+  return result;
+}
+
+const GRID_TRACK_TYPES = ["FLEX", "FIXED", "HUG"];
+
+function makeGridTrackSizes(field, sizes) {
+  if (!Array.isArray(sizes) || sizes.length === 0) {
+    throw new Error(`${field} must be a non-empty array`);
+  }
+  return sizes.map((size, index) => {
+    if (!size || GRID_TRACK_TYPES.indexOf(size.type) === -1) {
+      throw new Error(
+        `${field}[${index}].type must be one of ${GRID_TRACK_TYPES.join(", ")}`,
+      );
+    }
+    if (size.type === "FIXED" && !(Number(size.value) > 0)) {
+      throw new Error(`${field}[${index}].value must be > 0 for FIXED tracks`);
+    }
+    return { type: size.type, value: size.value };
+  });
+}
+
+// GridTrackSize objects are live setters on the node, see GridLayoutMixin
+function applyGridTrackSizes(tracks, sizes, label) {
+  if (tracks.length !== sizes.length) {
+    throw new Error(
+      `Grid has ${tracks.length} ${label}s but ${sizes.length} ${label} sizes were given`,
+    );
+  }
+  for (let i = 0; i < sizes.length; i++) {
+    tracks[i].type = sizes[i].type;
+    if (sizes[i].type !== "HUG" && sizes[i].value !== undefined) {
+      tracks[i].value = Number(sizes[i].value);
+    }
+  }
+}
+
+function serializeGridTrackSizes(tracks) {
+  return tracks.map((track) =>
+    track.value === undefined
+      ? { type: track.type }
+      : { type: track.type, value: track.value },
+  );
 }
 
 async function setPadding(params) {
@@ -6274,8 +6712,8 @@ async function createConnections(params) {
           // Continue with connection even if text setting fails
           results.push({
             id: clonedConnector.id,
-            startNodeId: startNodeId,
-            endNodeId: endNodeId,
+            startNodeId: originalStartId,
+            endNodeId: originalEndId,
             text: "",
             textError: textError.message,
           });
@@ -8107,4 +8545,691 @@ async function setFrameProperties(params) {
     x: node.x,
     y: node.y,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Variable metadata & modes, team library, component properties, paints
+// ---------------------------------------------------------------------------
+
+async function requireVariable(variableId) {
+  if (!variableId) {
+    throw new Error("Missing variableId parameter");
+  }
+  const variable = await figma.variables.getVariableByIdAsync(variableId);
+  if (!variable) {
+    throw new Error(`Variable not found with ID: ${variableId}`);
+  }
+  return variable;
+}
+
+async function requireVariableCollection(collectionId) {
+  if (!collectionId) {
+    throw new Error("Missing collectionId parameter");
+  }
+  const collection =
+    await figma.variables.getVariableCollectionByIdAsync(collectionId);
+  if (!collection) {
+    throw new Error(`Variable collection not found with ID: ${collectionId}`);
+  }
+  return collection;
+}
+
+function requireModeId(collection, modeId) {
+  if (!modeId) {
+    throw new Error("Missing modeId parameter");
+  }
+  const exists = collection.modes.some((mode) => mode.modeId === modeId);
+  if (!exists) {
+    throw new Error(
+      `Mode ${modeId} not found in collection "${collection.name}". Available: ${collection.modes
+        .map((mode) => `${mode.name} (${mode.modeId})`)
+        .join(", ")}`,
+    );
+  }
+  return modeId;
+}
+
+function serializeVariableCollectionMeta(collection) {
+  return {
+    id: collection.id,
+    name: collection.name,
+    hiddenFromPublishing: collection.hiddenFromPublishing,
+    defaultModeId: collection.defaultModeId,
+    modes: collection.modes.map((mode) => ({
+      modeId: mode.modeId,
+      name: mode.name,
+    })),
+  };
+}
+
+async function updateVariable(params) {
+  const p = params || {};
+  const variable = await requireVariable(p.variableId);
+
+  if (p.name !== undefined) variable.name = String(p.name);
+  if (p.description !== undefined) variable.description = String(p.description);
+  if (p.scopes !== undefined) {
+    if (!Array.isArray(p.scopes)) {
+      throw new Error("scopes must be an array of VariableScope values");
+    }
+    variable.scopes = p.scopes;
+  }
+  if (p.hiddenFromPublishing !== undefined) {
+    variable.hiddenFromPublishing = Boolean(p.hiddenFromPublishing);
+  }
+  if (p.codeSyntax) {
+    /** @type {CodeSyntaxPlatform[]} */
+    const platforms = ["WEB", "ANDROID", "iOS"];
+    for (const platform of platforms) {
+      const value = p.codeSyntax[platform];
+      if (value === undefined) continue;
+      if (value === "") {
+        variable.removeVariableCodeSyntax(platform);
+      } else {
+        variable.setVariableCodeSyntax(platform, String(value));
+      }
+    }
+  }
+
+  return {
+    id: variable.id,
+    name: variable.name,
+    description: variable.description,
+    resolvedType: variable.resolvedType,
+    variableCollectionId: variable.variableCollectionId,
+    scopes: variable.scopes,
+    hiddenFromPublishing: variable.hiddenFromPublishing,
+    codeSyntax: variable.codeSyntax,
+  };
+}
+
+async function updateVariableCollection(params) {
+  const p = params || {};
+  const collection = await requireVariableCollection(p.collectionId);
+  if (p.name !== undefined) collection.name = String(p.name);
+  if (p.hiddenFromPublishing !== undefined) {
+    collection.hiddenFromPublishing = Boolean(p.hiddenFromPublishing);
+  }
+  return serializeVariableCollectionMeta(collection);
+}
+
+async function manageVariableModes(params) {
+  const p = params || {};
+  const collection = await requireVariableCollection(p.collectionId);
+  let modeId = p.modeId;
+
+  switch (p.action) {
+    case "add":
+      if (!p.name) throw new Error("Missing name parameter for action add");
+      modeId = collection.addMode(String(p.name));
+      break;
+    case "rename":
+      if (!p.name) throw new Error("Missing name parameter for action rename");
+      requireModeId(collection, modeId);
+      collection.renameMode(modeId, String(p.name));
+      break;
+    case "remove":
+      requireModeId(collection, modeId);
+      if (collection.modes.length <= 1) {
+        throw new Error("Cannot remove the only mode of a collection");
+      }
+      collection.removeMode(modeId);
+      break;
+    default:
+      throw new Error('action must be "add", "rename" or "remove"');
+  }
+
+  const result = serializeVariableCollectionMeta(collection);
+  return Object.assign(
+    { collectionId: collection.id, action: p.action, modeId: modeId },
+    result,
+  );
+}
+
+async function setVariableMode(params) {
+  const p = params || {};
+  const node = await requireNode(p.nodeId);
+  if (!("setExplicitVariableModeForCollection" in node)) {
+    throw new Error(
+      `Node type ${node.type} does not support explicit variable modes`,
+    );
+  }
+  const collection = await requireVariableCollection(p.collectionId);
+  if (p.clear) {
+    node.clearExplicitVariableModeForCollection(collection);
+  } else {
+    requireModeId(collection, p.modeId);
+    node.setExplicitVariableModeForCollection(collection, p.modeId);
+  }
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    explicitVariableModes: node.explicitVariableModes,
+  };
+}
+
+function requireKey(key) {
+  if (!key || typeof key !== "string") {
+    throw new Error("Missing key parameter");
+  }
+  return key;
+}
+
+async function importStyleByKey(params) {
+  const style = await figma.importStyleByKeyAsync(
+    requireKey((params || {}).key),
+  );
+  return { id: style.id, key: style.key, name: style.name, type: style.type };
+}
+
+async function importVariableByKey(params) {
+  const variable = await figma.variables.importVariableByKeyAsync(
+    requireKey((params || {}).key),
+  );
+  return {
+    id: variable.id,
+    key: variable.key,
+    name: variable.name,
+    resolvedType: variable.resolvedType,
+    variableCollectionId: variable.variableCollectionId,
+  };
+}
+
+const TEAM_LIBRARY_UNAVAILABLE =
+  "teamLibrary not available — enable team library permission and re-run the plugin";
+
+function requireTeamLibrary() {
+  let api;
+  try {
+    api = figma.teamLibrary;
+  } catch (error) {
+    api = undefined;
+  }
+  if (!api) {
+    throw new Error(TEAM_LIBRARY_UNAVAILABLE);
+  }
+  return api;
+}
+
+async function getLibraryVariableCollections() {
+  const collections =
+    await requireTeamLibrary().getAvailableLibraryVariableCollectionsAsync();
+  return collections.map((collection) => ({
+    key: collection.key,
+    name: collection.name,
+    libraryName: collection.libraryName,
+  }));
+}
+
+async function getLibraryVariables(params) {
+  const p = params || {};
+  if (!p.libraryCollectionKey) {
+    throw new Error("Missing libraryCollectionKey parameter");
+  }
+  const teamLibrary = requireTeamLibrary();
+  const collectionKey = String(p.libraryCollectionKey);
+  const variables =
+    await teamLibrary.getVariablesInLibraryCollectionAsync(collectionKey);
+  if (variables.length === 0) {
+    // Empty result is ambiguous: distinguish an unknown key from an empty collection.
+    const collections =
+      await teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    const exists = collections.some(
+      (collection) => collection.key === collectionKey,
+    );
+    if (!exists) {
+      throw new Error(
+        `Library variable collection not found: ${collectionKey}. Use get_library_variable_collections to list available keys`,
+      );
+    }
+  }
+  return variables.map((variable) => ({
+    key: variable.key,
+    name: variable.name,
+    resolvedType: variable.resolvedType,
+  }));
+}
+
+async function requireComponentWithProperty(nodeId, propertyName) {
+  const node = await requireNode(nodeId);
+  if (node.type !== "COMPONENT" && node.type !== "COMPONENT_SET") {
+    throw new Error(
+      `Node ${node.id} is ${node.type}, expected COMPONENT or COMPONENT_SET`,
+    );
+  }
+  if (!propertyName) {
+    throw new Error("Missing propertyName parameter");
+  }
+  const definitions = node.componentPropertyDefinitions;
+  if (!(propertyName in definitions)) {
+    throw new Error(
+      `Component property "${propertyName}" not found. Available: ${Object.keys(
+        definitions,
+      ).join(", ")}`,
+    );
+  }
+  return node;
+}
+
+async function editComponentProperty(params) {
+  const p = params || {};
+  const node = await requireComponentWithProperty(p.nodeId, p.propertyName);
+  const newValues = p.newValues || {};
+  const update = {};
+  if (newValues.name !== undefined) update.name = String(newValues.name);
+  if (newValues.defaultValue !== undefined) {
+    update.defaultValue = newValues.defaultValue;
+  }
+  if (newValues.preferredValues !== undefined) {
+    update.preferredValues = newValues.preferredValues;
+  }
+  if (newValues.description !== undefined) {
+    update.description = String(newValues.description);
+  }
+  if (Object.keys(update).length === 0) {
+    throw new Error(
+      "newValues must include at least one of name, defaultValue, preferredValues, description",
+    );
+  }
+  const propertyName = node.editComponentProperty(p.propertyName, update);
+  return {
+    id: node.id,
+    name: node.name,
+    propertyName: propertyName,
+    definition: node.componentPropertyDefinitions[propertyName],
+  };
+}
+
+async function deleteComponentProperty(params) {
+  const p = params || {};
+  const node = await requireComponentWithProperty(p.nodeId, p.propertyName);
+  node.deleteComponentProperty(p.propertyName);
+  return {
+    id: node.id,
+    name: node.name,
+    deleted: p.propertyName,
+    remainingProperties: Object.keys(node.componentPropertyDefinitions),
+  };
+}
+
+async function resetInstanceOverrides(params) {
+  const p = params || {};
+  const ids = Array.isArray(p.nodeIds) ? p.nodeIds : p.nodeId ? [p.nodeId] : [];
+  if (ids.length === 0) {
+    throw new Error("Provide nodeId or nodeIds");
+  }
+  const results = [];
+  for (const id of ids) {
+    try {
+      const node = await requireNode(id);
+      if (node.type !== "INSTANCE") {
+        throw new Error(`Node ${node.id} is ${node.type}, expected INSTANCE`);
+      }
+      node.resetOverrides();
+      results.push({ nodeId: id, success: true, name: node.name });
+    } catch (error) {
+      results.push({ nodeId: id, success: false, error: error.message });
+    }
+  }
+  const applied = results.filter((result) => result.success).length;
+  return { applied: applied, failed: results.length - applied, results };
+}
+
+// CROP is left out: it needs an imageTransform, which set_fills doesn't take
+const IMAGE_SCALE_MODES = ["FILL", "FIT", "TILE"];
+
+function makePaintFromInput(input, index) {
+  if (!input || typeof input !== "object") {
+    throw new Error(`paints[${index}] must be an object`);
+  }
+  /** @type {any} */
+  let paint;
+  if (input.type === "SOLID") {
+    if (!input.color) throw new Error(`paints[${index}].color is required`);
+    paint = makeSolidPaint(input.color);
+  } else if (input.type === "IMAGE") {
+    if (!input.imageHash || !figma.getImageByHash(input.imageHash)) {
+      throw new Error(`paints[${index}].imageHash is missing or unknown`);
+    }
+    const scaleMode = input.scaleMode || "FILL";
+    if (IMAGE_SCALE_MODES.indexOf(scaleMode) === -1) {
+      throw new Error(
+        `paints[${index}].scaleMode must be one of ${IMAGE_SCALE_MODES.join(", ")}`,
+      );
+    }
+    paint = { type: "IMAGE", imageHash: input.imageHash, scaleMode: scaleMode };
+  } else {
+    paint = makeGradientPaint({
+      gradientType: input.type,
+      stops: input.stops,
+      angle: input.angle,
+    });
+  }
+  if (input.opacity !== undefined) paint.opacity = Number(input.opacity);
+  if (input.visible !== undefined) paint.visible = Boolean(input.visible);
+  if (input.blendMode !== undefined) paint.blendMode = input.blendMode;
+  return paint;
+}
+
+async function setFills(params) {
+  const p = params || {};
+  const target = p.target || "fills";
+  if (target !== "fills" && target !== "strokes") {
+    throw new Error('target must be "fills" or "strokes"');
+  }
+  if (!Array.isArray(p.paints)) {
+    throw new Error("paints must be an array (use [] to remove all paints)");
+  }
+  const node = /** @type {any} */ (await requireNode(p.nodeId));
+  if (!(target in node)) {
+    throw new Error(`Node type ${node.type} does not support ${target}`);
+  }
+  node[target] = p.paints.map(makePaintFromInput);
+  return { id: node.id, name: node.name, type: node.type, [target]: node[target] };
+}
+
+// ---------------------------------------------------------------------------
+// Fonts, auto-layout children, grid styles, export settings & slices
+// ---------------------------------------------------------------------------
+
+async function getAvailableFonts(params) {
+  const p = params || {};
+  const limit = p.limit === undefined ? 200 : Number(p.limit);
+  if (!(Number.isInteger(limit) && limit > 0)) {
+    throw new Error("limit must be a positive integer");
+  }
+  const filter = p.family ? String(p.family).toLowerCase() : "";
+  const fonts = await figma.listAvailableFontsAsync();
+  const families = new Map();
+  for (const font of fonts) {
+    const family = font.fontName.family;
+    if (filter && family.toLowerCase().indexOf(filter) === -1) continue;
+    if (!families.has(family)) families.set(family, []);
+    const styles = families.get(family);
+    if (styles.indexOf(font.fontName.style) === -1) {
+      styles.push(font.fontName.style);
+    }
+  }
+  const names = Array.from(families.keys()).sort();
+  const returned = names.slice(0, limit);
+  return {
+    totalFamilies: names.length,
+    returned: returned.length,
+    truncated: names.length > returned.length,
+    families: returned.map((family) => ({
+      family,
+      styles: families.get(family),
+    })),
+  };
+}
+
+const LAYOUT_ALIGN_VALUES = ["MIN", "CENTER", "MAX", "STRETCH", "INHERIT"];
+const GRID_CHILD_ALIGN_VALUES = ["MIN", "CENTER", "MAX", "AUTO"];
+
+async function setLayoutChild(params) {
+  const p = params || {};
+  const node = /** @type {any} */ (await requireNode(p.nodeId));
+  const parent = node.parent;
+  const parentMode =
+    parent && "layoutMode" in parent ? parent.layoutMode : "NONE";
+  const flexKeys = ["layoutGrow", "layoutAlign"];
+  const gridKeys = [
+    "gridRow",
+    "gridColumn",
+    "gridRowSpan",
+    "gridColumnSpan",
+    "gridChildHorizontalAlign",
+    "gridChildVerticalAlign",
+  ];
+  const given = flexKeys.concat(gridKeys).filter((key) => p[key] !== undefined);
+  if (given.length === 0) {
+    throw new Error(`Provide at least one of ${flexKeys.concat(gridKeys).join(", ")}`);
+  }
+  if (!("layoutGrow" in node)) {
+    throw new Error(`Node type ${node.type} cannot be an auto-layout child`);
+  }
+
+  // Validate before any mutation so a bad value doesn't leave partial edits
+  const usesFlex = flexKeys.some((key) => p[key] !== undefined);
+  const usesGrid = gridKeys.some((key) => p[key] !== undefined);
+  if (usesFlex && parentMode !== "HORIZONTAL" && parentMode !== "VERTICAL") {
+    throw new Error(
+      "layoutGrow/layoutAlign require a parent with HORIZONTAL or VERTICAL auto-layout",
+    );
+  }
+  if (usesGrid && parentMode !== "GRID") {
+    throw new Error("Grid child properties require a parent with layoutMode GRID");
+  }
+  if (p.layoutGrow !== undefined && !(Number(p.layoutGrow) >= 0)) {
+    throw new Error("layoutGrow must be >= 0 (0 = fixed, 1 = fill)");
+  }
+  if (
+    p.layoutAlign !== undefined &&
+    LAYOUT_ALIGN_VALUES.indexOf(p.layoutAlign) === -1
+  ) {
+    throw new Error(`layoutAlign must be one of ${LAYOUT_ALIGN_VALUES.join(", ")}`);
+  }
+  if ((p.gridRow === undefined) !== (p.gridColumn === undefined)) {
+    throw new Error("gridRow and gridColumn must be given together");
+  }
+  for (const key of ["gridChildHorizontalAlign", "gridChildVerticalAlign"]) {
+    if (p[key] !== undefined && GRID_CHILD_ALIGN_VALUES.indexOf(p[key]) === -1) {
+      throw new Error(`${key} must be one of ${GRID_CHILD_ALIGN_VALUES.join(", ")}`);
+    }
+  }
+
+  if (p.layoutGrow !== undefined) node.layoutGrow = Number(p.layoutGrow);
+  if (p.layoutAlign !== undefined) node.layoutAlign = p.layoutAlign;
+  if (p.gridRow !== undefined) {
+    node.setGridChildPosition(Number(p.gridRow), Number(p.gridColumn));
+  }
+  if (p.gridRowSpan !== undefined) node.gridRowSpan = Number(p.gridRowSpan);
+  if (p.gridColumnSpan !== undefined)
+    node.gridColumnSpan = Number(p.gridColumnSpan);
+  if (p.gridChildHorizontalAlign !== undefined)
+    node.gridChildHorizontalAlign = p.gridChildHorizontalAlign;
+  if (p.gridChildVerticalAlign !== undefined)
+    node.gridChildVerticalAlign = p.gridChildVerticalAlign;
+
+  /** @type {any} */
+  const result = {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    parentLayoutMode: parentMode,
+  };
+  if (parentMode === "GRID") {
+    result.gridRowAnchorIndex = node.gridRowAnchorIndex;
+    result.gridColumnAnchorIndex = node.gridColumnAnchorIndex;
+    result.gridRowSpan = node.gridRowSpan;
+    result.gridColumnSpan = node.gridColumnSpan;
+    result.gridChildHorizontalAlign = node.gridChildHorizontalAlign;
+    result.gridChildVerticalAlign = node.gridChildVerticalAlign;
+  } else {
+    result.layoutGrow = node.layoutGrow;
+    result.layoutAlign = node.layoutAlign;
+  }
+  return result;
+}
+
+function serializeGridStyle(style) {
+  return {
+    id: style.id,
+    key: style.key,
+    name: style.name,
+    description: style.description,
+    layoutGrids: style.layoutGrids,
+  };
+}
+
+async function createGridStyle(params) {
+  const { name, grids, description } = params || {};
+  if (!name) {
+    throw new Error("Missing name parameter");
+  }
+  if (!Array.isArray(grids) || !grids.length) {
+    throw new Error("grids must be a non-empty array");
+  }
+
+  const layoutGrids = /** @type {any} */ (grids.map(makeLayoutGrid));
+  const style = figma.createGridStyle();
+  try {
+    style.name = name;
+    style.layoutGrids = layoutGrids;
+    if (description !== undefined) style.description = description;
+  } catch (error) {
+    style.remove();
+    throw new Error(`Error creating grid style: ${error.message}`);
+  }
+  return serializeGridStyle(style);
+}
+
+async function updateGridStyle(params) {
+  const { styleId, name, grids, description } = params || {};
+  if (!styleId) {
+    throw new Error("Missing styleId parameter");
+  }
+
+  const style = await figma.getStyleByIdAsync(styleId);
+  if (!style || style.type !== "GRID") {
+    throw new Error(`Grid style with ID ${styleId} not found`);
+  }
+  if (grids !== undefined) {
+    if (!Array.isArray(grids)) {
+      throw new Error("grids must be an array");
+    }
+    style.layoutGrids = /** @type {any} */ (grids.map(makeLayoutGrid));
+  }
+  if (name !== undefined) style.name = name;
+  if (description !== undefined) style.description = description;
+  return serializeGridStyle(style);
+}
+
+async function applyGridStyle(params) {
+  const { styleId } = params || {};
+  const nodeIds =
+    (params && params.nodeIds) ||
+    (params && params.nodeId ? [params.nodeId] : []);
+  if (styleId === undefined) {
+    throw new Error("Missing styleId parameter (use '' to detach)");
+  }
+  if (!nodeIds.length) {
+    throw new Error("Missing nodeId or nodeIds parameter");
+  }
+
+  let style = null;
+  if (styleId) {
+    style = await figma.getStyleByIdAsync(styleId);
+    if (!style || style.type !== "GRID") {
+      throw new Error(`Grid style with ID ${styleId} not found`);
+    }
+  }
+
+  const results = [];
+  for (const nodeId of nodeIds) {
+    try {
+      const node = await figma.getNodeByIdAsync(nodeId);
+      if (!node) throw new Error("Node not found");
+      if (!("gridStyleId" in node))
+        throw new Error(`Node type ${node.type} does not support layout grids`);
+      await node.setGridStyleIdAsync(style ? style.id : "");
+      results.push({ nodeId, success: true });
+    } catch (error) {
+      results.push({ nodeId, success: false, error: error.message });
+    }
+  }
+
+  return {
+    styleId: style ? style.id : "",
+    styleName: style ? style.name : null,
+    applied: results.filter((r) => r.success).length,
+    failed: results.filter((r) => !r.success).length,
+    results,
+  };
+}
+
+const EXPORT_FORMATS = ["PNG", "JPG", "SVG", "PDF"];
+const EXPORT_CONSTRAINT_TYPES = ["SCALE", "WIDTH", "HEIGHT"];
+const EXPORT_COLOR_PROFILES = ["DOCUMENT", "SRGB", "DISPLAY_P3_V4"];
+
+function makeExportSetting(input, index) {
+  if (!input || EXPORT_FORMATS.indexOf(input.format) === -1) {
+    throw new Error(
+      `settings[${index}].format must be one of ${EXPORT_FORMATS.join(", ")}`,
+    );
+  }
+  /** @type {any} */
+  const setting = { format: input.format };
+  if (input.suffix !== undefined) setting.suffix = String(input.suffix);
+  if (input.contentsOnly !== undefined)
+    setting.contentsOnly = Boolean(input.contentsOnly);
+  if (input.useAbsoluteBounds !== undefined)
+    setting.useAbsoluteBounds = Boolean(input.useAbsoluteBounds);
+  if (input.colorProfile !== undefined) {
+    if (EXPORT_COLOR_PROFILES.indexOf(input.colorProfile) === -1) {
+      throw new Error(
+        `settings[${index}].colorProfile must be one of ${EXPORT_COLOR_PROFILES.join(", ")}`,
+      );
+    }
+    setting.colorProfile = input.colorProfile;
+  }
+  if (input.constraint !== undefined) {
+    if (input.format !== "PNG" && input.format !== "JPG") {
+      throw new Error(`settings[${index}].constraint is only valid for PNG/JPG`);
+    }
+    const c = input.constraint;
+    if (!c || EXPORT_CONSTRAINT_TYPES.indexOf(c.type) === -1 || !(Number(c.value) > 0)) {
+      throw new Error(
+        `settings[${index}].constraint must be { type: SCALE | WIDTH | HEIGHT, value > 0 }`,
+      );
+    }
+    setting.constraint = { type: c.type, value: Number(c.value) };
+  }
+  if (input.format === "SVG") {
+    for (const key of ["svgOutlineText", "svgIdAttribute", "svgSimplifyStroke"]) {
+      if (input[key] !== undefined) setting[key] = Boolean(input[key]);
+    }
+  }
+  return setting;
+}
+
+async function setExportSettings(params) {
+  const p = params || {};
+  if (!Array.isArray(p.settings)) {
+    throw new Error("settings must be an array (use [] to remove all)");
+  }
+  const node = /** @type {any} */ (await requireNode(p.nodeId));
+  if (!("exportSettings" in node)) {
+    throw new Error(`Node type ${node.type} does not support export settings`);
+  }
+  node.exportSettings = p.settings.map(makeExportSetting);
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    exportSettings: node.exportSettings,
+  };
+}
+
+async function createSlice(params) {
+  const p = params || {};
+  const width = Number(p.width);
+  const height = Number(p.height);
+  if (!(width > 0) || !(height > 0)) {
+    throw new Error("width and height must be > 0");
+  }
+  const parent = /** @type {any} */ (await resolveNewNodeParent(p.parentId));
+  const slice = figma.createSlice();
+  try {
+    slice.x = Number(p.x) || 0;
+    slice.y = Number(p.y) || 0;
+    slice.resize(width, height);
+    if (p.name) slice.name = p.name;
+    parent.appendChild(slice);
+  } catch (error) {
+    slice.remove();
+    throw new Error(`Error creating slice: ${error.message}`);
+  }
+  return serializeNewShape(slice);
 }

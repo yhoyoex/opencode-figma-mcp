@@ -11,13 +11,19 @@ import { simplifyBundles, type VariableInfo } from "./design/simplify.js";
 import {
   downloadBytes,
   getFigmaToken,
+  getFileComments,
   getFileNodes,
   getFileOutline,
+  getFileVersions,
   getImageFillUrls,
   getImageRenderUrls,
   getLocalVariables as getRestLocalVariables,
+  getTeamComponents,
+  getTeamStyles,
   normalizeNodeId,
   parseFigmaUrl,
+  postFileComment,
+  type PostCommentBody,
 } from "./design/figma_rest.js";
 
 // Define TypeScript interfaces for Figma responses
@@ -197,21 +203,32 @@ server.tool(
   },
 );
 
+const nodeDetailSchema = z
+  .enum(["basic", "full"])
+  .optional()
+  .describe(
+    'Level of detail (default "basic"). "full" adds visibility/lock/opacity/rotation/blendMode/isMask, constraints, effects, style ids, boundVariables, explicitVariableModes, component properties, auto-layout & sizing fields, stroke weight/align/dash, and includes VECTOR nodes with a summary of vectorPaths. figma.mixed values are returned as "mixed"',
+  );
+
 // Node Info Tool
 server.tool(
   "get_node_info",
   "Get detailed information about a specific node in Figma",
   {
     nodeId: z.string().describe("The ID of the node to get information about"),
+    detail: nodeDetailSchema,
   },
-  async ({ nodeId }: any) => {
+  async ({ nodeId, detail }: any) => {
     try {
-      const result = await sendCommandToFigma("get_node_info", { nodeId });
+      const result = await sendCommandToFigma("get_node_info", {
+        nodeId,
+        detail,
+      });
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(filterFigmaNode(result)),
+            text: JSON.stringify(filterFigmaNode(result, detail)),
           },
         ],
       };
@@ -244,9 +261,10 @@ function rgbaToHex(color: any): string {
   return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}${a === 255 ? "" : a.toString(16).padStart(2, "0")}`;
 }
 
-function filterFigmaNode(node: any) {
+function filterFigmaNode(node: any, detail: "basic" | "full" = "basic") {
+  const full = detail === "full";
   // Skip VECTOR type nodes
-  if (node.type === "VECTOR") {
+  if (node.type === "VECTOR" && !full) {
     return null;
   }
 
@@ -261,7 +279,7 @@ function filterFigmaNode(node: any) {
       const processedFill = { ...fill };
 
       // Remove boundVariables and imageRef
-      delete processedFill.boundVariables;
+      if (!full) delete processedFill.boundVariables;
       delete processedFill.imageRef;
 
       // Process gradientStops if present
@@ -274,7 +292,7 @@ function filterFigmaNode(node: any) {
               processedStop.color = rgbaToHex(processedStop.color);
             }
             // Remove boundVariables
-            delete processedStop.boundVariables;
+            if (!full) delete processedStop.boundVariables;
             return processedStop;
           },
         );
@@ -293,7 +311,7 @@ function filterFigmaNode(node: any) {
     filtered.strokes = node.strokes.map((stroke: any) => {
       const processedStroke = { ...stroke };
       // Remove boundVariables
-      delete processedStroke.boundVariables;
+      if (!full) delete processedStroke.boundVariables;
       // Convert color to hex if present
       if (processedStroke.color) {
         processedStroke.color = rgbaToHex(processedStroke.color);
@@ -326,9 +344,18 @@ function filterFigmaNode(node: any) {
     };
   }
 
+  if (full) {
+    // Extra properties the plugin collected for detail "full"
+    for (const key of Object.keys(node)) {
+      if (!(key in filtered) && key !== "children") {
+        filtered[key] = node[key];
+      }
+    }
+  }
+
   if (node.children) {
     filtered.children = node.children
-      .map((child: any) => filterFigmaNode(child))
+      .map((child: any) => filterFigmaNode(child, detail))
       .filter((child: any) => child !== null); // Remove null children (VECTOR nodes)
   }
 
@@ -343,12 +370,16 @@ server.tool(
     nodeIds: z
       .array(z.string())
       .describe("Array of node IDs to get information about"),
+    detail: nodeDetailSchema,
   },
-  async ({ nodeIds }: any) => {
+  async ({ nodeIds, detail }: any) => {
     try {
       const results = await Promise.all(
         nodeIds.map(async (nodeId: any) => {
-          const result = await sendCommandToFigma("get_node_info", { nodeId });
+          const result = await sendCommandToFigma("get_node_info", {
+            nodeId,
+            detail,
+          });
           return { nodeId, info: result };
         }),
       );
@@ -357,7 +388,7 @@ server.tool(
           {
             type: "text",
             text: JSON.stringify(
-              results.map((result) => filterFigmaNode(result.info)),
+              results.map((result) => filterFigmaNode(result.info, detail)),
             ),
           },
         ],
@@ -599,6 +630,20 @@ server.tool(
       .number()
       .optional()
       .describe("Font weight (e.g., 400 for Regular, 700 for Bold)"),
+    fontFamily: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Font family (default: Inter). Use get_available_fonts to list installed fonts",
+      ),
+    fontStyle: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Font style name as shown in Figma, e.g. "Regular", "Semi Bold", "Bold Italic". Takes precedence over fontWeight',
+      ),
     fontColor: z
       .object({
         r: z.number().min(0).max(1).describe("Red component (0-1)"),
@@ -628,6 +673,8 @@ server.tool(
     text,
     fontSize,
     fontWeight,
+    fontFamily,
+    fontStyle,
     fontColor,
     name,
     parentId,
@@ -639,6 +686,8 @@ server.tool(
         text,
         fontSize: fontSize || 14,
         fontWeight: fontWeight || 400,
+        fontFamily,
+        fontStyle,
         fontColor: fontColor || { r: 0, g: 0, b: 0, a: 1 },
         name: name || "Text",
         parentId,
@@ -2303,26 +2352,88 @@ This strategy enables transferring content and property overrides from a source 
   },
 );
 
+const gridTrackSizesSchema = z
+  .array(
+    z.object({
+      type: z
+        .enum(["FLEX", "FIXED", "HUG"])
+        .describe("FLEX = fr unit, FIXED = pixels, HUG = fit content"),
+      value: z
+        .number()
+        .positive()
+        .optional()
+        .describe("Pixels for FIXED (required), fr value for FLEX (optional)"),
+    }),
+  )
+  .min(1);
+
 // Set Layout Mode Tool
 server.tool(
   "set_layout_mode",
-  "Set the layout mode and wrap behavior of a frame in Figma",
+  "Set the layout mode and wrap behavior of a frame in Figma. HORIZONTAL/VERTICAL = flex auto-layout (optionally WRAP + counterAxisAlignContent); GRID = grid auto-layout with row/column count, gaps and track sizes. Position grid children with set_layout_child.",
   {
     nodeId: z.string().describe("The ID of the frame to modify"),
     layoutMode: z
-      .enum(["NONE", "HORIZONTAL", "VERTICAL"])
+      .enum(["NONE", "HORIZONTAL", "VERTICAL", "GRID"])
       .describe("Layout mode for the frame"),
     layoutWrap: z
       .enum(["NO_WRAP", "WRAP"])
       .optional()
-      .describe("Whether the auto-layout frame wraps its children"),
+      .describe(
+        "Whether the auto-layout frame wraps its children (HORIZONTAL/VERTICAL only)",
+      ),
+    counterAxisAlignContent: z
+      .enum(["AUTO", "SPACE_BETWEEN"])
+      .optional()
+      .describe(
+        "How wrapped tracks are spaced (requires layoutWrap WRAP), like CSS align-content",
+      ),
+    strokesIncludedInLayout: z
+      .boolean()
+      .optional()
+      .describe("Whether strokes count toward layout size (like border-box)"),
+    gridRowCount: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("GRID only: number of rows"),
+    gridColumnCount: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("GRID only: number of columns"),
+    gridRowGap: z.number().min(0).optional().describe("GRID only: row gap in pixels"),
+    gridColumnGap: z
+      .number()
+      .min(0)
+      .optional()
+      .describe("GRID only: column gap in pixels"),
+    gridRowSizes: gridTrackSizesSchema
+      .optional()
+      .describe(
+        "GRID only: size per row, top to bottom; its length sets the row count when gridRowCount is omitted",
+      ),
+    gridColumnSizes: gridTrackSizesSchema
+      .optional()
+      .describe(
+        "GRID only: size per column, left to right; its length sets the column count when gridColumnCount is omitted",
+      ),
+    gridAutoTracks: z
+      .enum(["NONE", "ROWS"])
+      .optional()
+      .describe(
+        "GRID only: ROWS adds/removes rows automatically as children change (then gridRowCount/gridRowSizes cannot be set); NONE = fixed row count",
+      ),
   },
-  async ({ nodeId, layoutMode, layoutWrap }: any) => {
+  async ({ nodeId, layoutMode, layoutWrap, ...rest }: any) => {
     try {
       const result = await sendCommandToFigma("set_layout_mode", {
         nodeId,
         layoutMode,
         layoutWrap: layoutWrap || "NO_WRAP",
+        ...rest,
       });
       const typedResult = result as { name: string };
       return {
@@ -2992,13 +3103,32 @@ type FigmaCommand =
   | "create_shape_with_text"
   | "create_table"
   | "set_shared_plugin_data"
-  | "get_shared_plugin_data";
+  | "get_shared_plugin_data"
+  | "update_variable"
+  | "update_variable_collection"
+  | "manage_variable_modes"
+  | "set_variable_mode"
+  | "import_style_by_key"
+  | "import_variable_by_key"
+  | "get_library_variable_collections"
+  | "get_library_variables"
+  | "edit_component_property"
+  | "delete_component_property"
+  | "reset_instance_overrides"
+  | "set_fills"
+  | "get_available_fonts"
+  | "set_layout_child"
+  | "create_grid_style"
+  | "update_grid_style"
+  | "apply_grid_style"
+  | "set_export_settings"
+  | "create_slice";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
   get_selection: Record<string, never>;
-  get_node_info: { nodeId: string };
-  get_nodes_info: { nodeIds: string[] };
+  get_node_info: { nodeId: string; detail?: "basic" | "full" };
+  get_nodes_info: { nodeIds: string[]; detail?: "basic" | "full" };
   create_rectangle: {
     x: number;
     y: number;
@@ -3031,6 +3161,8 @@ type CommandParams = {
     text: string;
     fontSize?: number;
     fontWeight?: number;
+    fontFamily?: string;
+    fontStyle?: string;
     fontColor?: { r: number; g: number; b: number; a?: number };
     name?: string;
     parentId?: string;
@@ -3319,6 +3451,11 @@ type CommandParams = {
     textAlignHorizontal?: string;
     textAlignVertical?: string;
     textAutoResize?: string;
+    hyperlink?: { type: "URL" | "NODE"; value: string } | null;
+    listType?: "NONE" | "ORDERED" | "UNORDERED";
+    indentation?: number;
+    textTruncation?: "DISABLED" | "ENDING";
+    maxLines?: number | null;
   };
   set_node_properties: {
     nodeId?: string;
@@ -3423,7 +3560,140 @@ type CommandParams = {
     value: string;
   };
   get_shared_plugin_data: { nodeId: string; namespace: string; key?: string };
+  update_variable: {
+    variableId: string;
+    name?: string;
+    description?: string;
+    scopes?: string[];
+    hiddenFromPublishing?: boolean;
+    codeSyntax?: { WEB?: string; ANDROID?: string; iOS?: string };
+  };
+  update_variable_collection: {
+    collectionId: string;
+    name?: string;
+    hiddenFromPublishing?: boolean;
+  };
+  manage_variable_modes: {
+    collectionId: string;
+    action: "add" | "rename" | "remove";
+    name?: string;
+    modeId?: string;
+  };
+  set_variable_mode: {
+    nodeId: string;
+    collectionId: string;
+    modeId?: string;
+    clear?: boolean;
+  };
+  import_style_by_key: { key: string };
+  import_variable_by_key: { key: string };
+  get_library_variable_collections: Record<string, never>;
+  get_library_variables: { libraryCollectionKey: string };
+  edit_component_property: {
+    nodeId: string;
+    propertyName: string;
+    newValues: {
+      name?: string;
+      defaultValue?: string | boolean;
+      preferredValues?: Array<{
+        type: "COMPONENT" | "COMPONENT_SET";
+        key: string;
+      }>;
+    };
+  };
+  delete_component_property: { nodeId: string; propertyName: string };
+  reset_instance_overrides: { nodeId?: string; nodeIds?: string[] };
+  set_fills: {
+    nodeId: string;
+    target?: "fills" | "strokes";
+    paints: PaintInput[];
+  };
+  set_layout_mode: {
+    nodeId: string;
+    layoutMode: "NONE" | "HORIZONTAL" | "VERTICAL" | "GRID";
+    layoutWrap?: "NO_WRAP" | "WRAP";
+    counterAxisAlignContent?: "AUTO" | "SPACE_BETWEEN";
+    strokesIncludedInLayout?: boolean;
+    gridRowCount?: number;
+    gridColumnCount?: number;
+    gridRowGap?: number;
+    gridColumnGap?: number;
+    gridRowSizes?: GridTrackSizeInput[];
+    gridColumnSizes?: GridTrackSizeInput[];
+  };
+  get_available_fonts: { family?: string; limit?: number };
+  set_layout_child: {
+    nodeId: string;
+    layoutGrow?: number;
+    layoutAlign?: "MIN" | "CENTER" | "MAX" | "STRETCH" | "INHERIT";
+    gridRow?: number;
+    gridColumn?: number;
+    gridRowSpan?: number;
+    gridColumnSpan?: number;
+    gridChildHorizontalAlign?: "MIN" | "CENTER" | "MAX" | "AUTO";
+    gridChildVerticalAlign?: "MIN" | "CENTER" | "MAX" | "AUTO";
+  };
+  create_grid_style: {
+    name: string;
+    grids: LayoutGridInput[];
+    description?: string;
+  };
+  update_grid_style: {
+    styleId: string;
+    name?: string;
+    grids?: LayoutGridInput[];
+    description?: string;
+  };
+  apply_grid_style: { styleId: string; nodeId?: string; nodeIds?: string[] };
+  set_export_settings: { nodeId: string; settings: ExportSettingInput[] };
+  create_slice: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    name?: string;
+    parentId?: string;
+  };
 };
+
+type GridTrackSizeInput = { type: "FLEX" | "FIXED" | "HUG"; value?: number };
+
+type ExportSettingInput = {
+  format: "PNG" | "JPG" | "SVG" | "PDF";
+  suffix?: string;
+  constraint?: { type: "SCALE" | "WIDTH" | "HEIGHT"; value: number };
+  contentsOnly?: boolean;
+  useAbsoluteBounds?: boolean;
+  colorProfile?: "DOCUMENT" | "SRGB" | "DISPLAY_P3_V4";
+  svgOutlineText?: boolean;
+  svgIdAttribute?: boolean;
+  svgSimplifyStroke?: boolean;
+};
+
+type PaintInput =
+  | {
+      type: "SOLID";
+      color: RGBAInput;
+      opacity?: number;
+      visible?: boolean;
+      blendMode?: string;
+    }
+  | {
+      type: GradientInput["gradientType"];
+      stops: GradientInput["stops"];
+      angle?: number;
+      opacity?: number;
+      visible?: boolean;
+      blendMode?: string;
+    }
+  | {
+      type: "IMAGE";
+      imageHash: string;
+      scaleMode?: "FILL" | "FIT" | "CROP" | "TILE";
+      opacity?: number;
+      visible?: boolean;
+      blendMode?: string;
+    };
 
 type ConstraintInput = "MIN" | "CENTER" | "MAX" | "STRETCH" | "SCALE";
 
@@ -5374,7 +5644,7 @@ server.tool(
 // Set Text Properties Tool
 server.tool(
   "set_text_properties",
-  "Set typography of a TEXT node: font, size, line height, letter spacing, case and color, for the whole node or a character range [start, end). Paragraph spacing, alignment and auto-resize always apply to the whole node.",
+  "Set typography of a TEXT node: font, size, line height, letter spacing, case, color, hyperlink, list type and indentation, for the whole node or a character range [start, end). Paragraph spacing, alignment, auto-resize, truncation and maxLines always apply to the whole node.",
   {
     nodeId: z.string().describe("ID of the text node"),
     start: z
@@ -5448,6 +5718,55 @@ server.tool(
       .enum(["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"])
       .optional()
       .describe("Auto-resize mode (whole node)"),
+    hyperlink: z
+      .union([
+        z
+          .object({
+            type: z.enum(["URL", "NODE"]),
+            value: z
+              .string()
+              .min(1)
+              .describe("URL for type URL, or target node ID for type NODE"),
+          })
+          .refine(
+            (link) =>
+              link.type !== "URL" || /^(https?:|mailto:)/i.test(link.value),
+            {
+              message: "hyperlink URL must start with http:, https: or mailto:",
+              path: ["value"],
+            },
+          ),
+        z.null(),
+      ])
+      .optional()
+      .describe(
+        "Hyperlink for the node or range: { type: 'URL', value: 'https://...' }, { type: 'NODE', value: nodeId }, or null to remove",
+      ),
+    listType: z
+      .enum(["NONE", "ORDERED", "UNORDERED"])
+      .optional()
+      .describe(
+        "List style for the paragraphs in the node or range (NONE removes the list)",
+      ),
+    indentation: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("List indentation level for the node or range (0 = none)"),
+    textTruncation: z
+      .enum(["DISABLED", "ENDING"])
+      .optional()
+      .describe("ENDING truncates overflowing text with an ellipsis (whole node)"),
+    maxLines: z
+      .number()
+      .int()
+      .min(1)
+      .nullable()
+      .optional()
+      .describe(
+        "Max lines before truncating, needs textTruncation ENDING; null disables (whole node)",
+      ),
   },
   async (params: any) => {
     try {
@@ -5808,78 +6127,83 @@ const gridColorSchema = rgbaSchema
   .optional()
   .describe("Grid color, RGBA 0-1 (default red at 10% opacity)");
 
+// Shared layout grid list schema for set_layout_grids and grid styles
+const layoutGridsSchema = z.array(
+  z.union([
+    z.object({
+      pattern: z.literal("GRID").describe("Square grid"),
+      sectionSize: z
+        .number()
+        .positive()
+        .describe("Grid cell size in pixels"),
+      visible: z
+        .boolean()
+        .optional()
+        .describe("Whether the grid is visible (default true)"),
+      color: gridColorSchema,
+    }),
+    z.object({
+      pattern: z
+        .enum(["COLUMNS", "ROWS"])
+        .describe("Column or row grid"),
+      alignment: z
+        .enum(["MIN", "MAX", "STRETCH", "CENTER"])
+        .describe("Grid alignment within the frame"),
+      count: z
+        .union([z.number().int().positive(), z.literal("AUTO")])
+        .describe('Number of columns/rows, or "AUTO" to fill the frame'),
+      gutterSize: z
+        .number()
+        .min(0)
+        .describe("Gap between columns/rows in pixels"),
+      offset: z
+        .number()
+        .min(0)
+        .optional()
+        .describe(
+          "Margin from the frame edge in pixels (ignored for CENTER, default 0)",
+        ),
+      sectionSize: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          "Column/row width in pixels; required unless alignment is STRETCH",
+        ),
+      visible: z
+        .boolean()
+        .optional()
+        .describe("Whether the grid is visible (default true)"),
+      color: gridColorSchema,
+    }),
+  ]),
+);
+
+function validateLayoutGrids(grids: LayoutGridInput[]) {
+  for (const grid of grids) {
+    if (
+      grid.pattern !== "GRID" &&
+      grid.alignment !== "STRETCH" &&
+      grid.sectionSize === undefined
+    ) {
+      throw new Error(
+        `sectionSize is required for ${grid.pattern} grids with alignment ${grid.alignment}`,
+      );
+    }
+  }
+}
+
 // Set Layout Grids Tool
 server.tool(
   "set_layout_grids",
   "Replace the layout grids of a frame, component or instance. Pass an empty array to remove all grids.",
   {
     nodeId: z.string().describe("ID of the frame/component/instance"),
-    grids: z
-      .array(
-        z.union([
-          z.object({
-            pattern: z.literal("GRID").describe("Square grid"),
-            sectionSize: z
-              .number()
-              .positive()
-              .describe("Grid cell size in pixels"),
-            visible: z
-              .boolean()
-              .optional()
-              .describe("Whether the grid is visible (default true)"),
-            color: gridColorSchema,
-          }),
-          z.object({
-            pattern: z
-              .enum(["COLUMNS", "ROWS"])
-              .describe("Column or row grid"),
-            alignment: z
-              .enum(["MIN", "MAX", "STRETCH", "CENTER"])
-              .describe("Grid alignment within the frame"),
-            count: z
-              .union([z.number().int().positive(), z.literal("AUTO")])
-              .describe('Number of columns/rows, or "AUTO" to fill the frame'),
-            gutterSize: z
-              .number()
-              .min(0)
-              .describe("Gap between columns/rows in pixels"),
-            offset: z
-              .number()
-              .min(0)
-              .optional()
-              .describe(
-                "Margin from the frame edge in pixels (ignored for CENTER, default 0)",
-              ),
-            sectionSize: z
-              .number()
-              .positive()
-              .optional()
-              .describe(
-                "Column/row width in pixels; required unless alignment is STRETCH",
-              ),
-            visible: z
-              .boolean()
-              .optional()
-              .describe("Whether the grid is visible (default true)"),
-            color: gridColorSchema,
-          }),
-        ]),
-      )
-      .describe("Layout grids to set; [] removes all grids"),
+    grids: layoutGridsSchema.describe("Layout grids to set; [] removes all grids"),
   },
   async ({ nodeId, grids }: any) => {
     try {
-      for (const grid of grids as LayoutGridInput[]) {
-        if (
-          grid.pattern !== "GRID" &&
-          grid.alignment !== "STRETCH" &&
-          grid.sectionSize === undefined
-        ) {
-          throw new Error(
-            `sectionSize is required for ${grid.pattern} grids with alignment ${grid.alignment}`,
-          );
-        }
-      }
+      validateLayoutGrids(grids);
       const result = await sendCommandToFigma("set_layout_grids", {
         nodeId,
         grids,
@@ -6173,6 +6497,606 @@ server.tool(
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error getting shared plugin data", error);
+    }
+  },
+);
+
+const variableScopeSchema = z.enum([
+  "ALL_SCOPES",
+  "TEXT_CONTENT",
+  "CORNER_RADIUS",
+  "WIDTH_HEIGHT",
+  "GAP",
+  "ALL_FILLS",
+  "FRAME_FILL",
+  "SHAPE_FILL",
+  "TEXT_FILL",
+  "STROKE_COLOR",
+  "STROKE_FLOAT",
+  "EFFECT_FLOAT",
+  "EFFECT_COLOR",
+  "OPACITY",
+  "COLOR_OPACITY",
+  "FONT_FAMILY",
+  "FONT_STYLE",
+  "FONT_WEIGHT",
+  "FONT_SIZE",
+  "LINE_HEIGHT",
+  "LETTER_SPACING",
+  "PARAGRAPH_SPACING",
+  "PARAGRAPH_INDENT",
+]);
+
+// Update Variable Tool
+server.tool(
+  "update_variable",
+  "Update metadata of an existing variable: name, description, scopes, hiddenFromPublishing and code syntax (WEB/ANDROID/iOS). Use set_variable_value to change values.",
+  {
+    variableId: z.string().describe("ID of the variable"),
+    name: z.string().optional().describe("New name (use / for groups)"),
+    description: z.string().optional().describe("New description"),
+    scopes: z
+      .array(variableScopeSchema)
+      .optional()
+      .describe("Replace the variable scopes, e.g. [\"ALL_FILLS\"]"),
+    hiddenFromPublishing: z
+      .boolean()
+      .optional()
+      .describe("Hide the variable when publishing the library"),
+    codeSyntax: z
+      .object({
+        WEB: z.string().optional(),
+        ANDROID: z.string().optional(),
+        iOS: z.string().optional(),
+      })
+      .optional()
+      .describe(
+        "Code syntax per platform, e.g. {WEB: 'var(--color-primary)'}. An empty string removes the syntax for that platform",
+      ),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("update_variable", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error updating variable", error);
+    }
+  },
+);
+
+// Update Variable Collection Tool
+server.tool(
+  "update_variable_collection",
+  "Rename a variable collection or change whether it is hidden from publishing.",
+  {
+    collectionId: z.string().describe("ID of the variable collection"),
+    name: z.string().optional().describe("New collection name"),
+    hiddenFromPublishing: z
+      .boolean()
+      .optional()
+      .describe("Hide the collection when publishing the library"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "update_variable_collection",
+        params,
+      );
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error updating variable collection", error);
+    }
+  },
+);
+
+// Manage Variable Modes Tool
+server.tool(
+  "manage_variable_modes",
+  "Add, rename or remove a mode of a variable collection (e.g. Light/Dark). Returns the collection's current modes. The number of modes may be limited by the Figma plan.",
+  {
+    collectionId: z.string().describe("ID of the variable collection"),
+    action: z.enum(["add", "rename", "remove"]).describe("Mode operation"),
+    name: z
+      .string()
+      .optional()
+      .describe("Mode name (required for add and rename)"),
+    modeId: z
+      .string()
+      .optional()
+      .describe("Mode ID (required for rename and remove)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("manage_variable_modes", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error managing variable modes", error);
+    }
+  },
+);
+
+// Set Variable Mode Tool
+server.tool(
+  "set_variable_mode",
+  "Set the explicit variable mode of a node (frame, component, page, ...) for a collection, e.g. switch a frame to Dark mode. Use clear: true to remove the explicit mode so it inherits from its parent. Returns the node's explicitVariableModes.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    collectionId: z.string().describe("ID of the variable collection"),
+    modeId: z
+      .string()
+      .optional()
+      .describe("Mode ID to apply (required unless clear is true)"),
+    clear: z
+      .boolean()
+      .optional()
+      .describe("true to clear the explicit mode for this collection"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_variable_mode", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting variable mode", error);
+    }
+  },
+);
+
+// Import Style By Key Tool
+server.tool(
+  "import_style_by_key",
+  "Import a published library style (paint, text, effect or grid) by its key so it can be applied locally. Returns the local style id, name and type.",
+  {
+    key: z.string().describe("Published style key"),
+  },
+  async ({ key }: any) => {
+    try {
+      const result = await sendCommandToFigma("import_style_by_key", { key });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error importing style", error);
+    }
+  },
+);
+
+// Import Variable By Key Tool
+server.tool(
+  "import_variable_by_key",
+  "Import a published library variable by its key (see get_library_variables) so it can be bound locally. Returns id, name, resolvedType and variableCollectionId.",
+  {
+    key: z.string().describe("Published variable key"),
+  },
+  async ({ key }: any) => {
+    try {
+      const result = await sendCommandToFigma("import_variable_by_key", {
+        key,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error importing variable", error);
+    }
+  },
+);
+
+// Get Library Variable Collections Tool
+server.tool(
+  "get_library_variable_collections",
+  "List variable collections available from enabled team libraries (key, name, libraryName). Requires the plugin's teamlibrary permission.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_library_variable_collections",
+      );
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting library variable collections", error);
+    }
+  },
+);
+
+// Get Library Variables Tool
+server.tool(
+  "get_library_variables",
+  "List variables (key, name, resolvedType) in a team library variable collection. Import one with import_variable_by_key.",
+  {
+    libraryCollectionKey: z
+      .string()
+      .describe("Key of the library collection from get_library_variable_collections"),
+  },
+  async ({ libraryCollectionKey }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_library_variables", {
+        libraryCollectionKey,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting library variables", error);
+    }
+  },
+);
+
+// Edit Component Property Tool
+server.tool(
+  "edit_component_property",
+  "Edit a component property (BOOLEAN, TEXT, INSTANCE_SWAP) on a COMPONENT or COMPONENT_SET: rename it, change its default value, preferred values or description. Returns the new full property name. Limitations: VARIANT properties and slotSettings are not supported; for a variant inside a set, edit the property on the parent COMPONENT_SET.",
+  {
+    nodeId: z.string().describe("ID of the COMPONENT or COMPONENT_SET"),
+    propertyName: z
+      .string()
+      .describe("Full property name including the #id suffix, e.g. 'Label#12:0'"),
+    newValues: z
+      .object({
+        name: z.string().optional().describe("New property name (without suffix)"),
+        defaultValue: z
+          .union([z.string(), z.boolean()])
+          .optional()
+          .describe("New default value (string for TEXT / component id for INSTANCE_SWAP, boolean for BOOLEAN)"),
+        preferredValues: z
+          .array(
+            z.object({
+              type: z.enum(["COMPONENT", "COMPONENT_SET"]),
+              key: z.string().describe("Component or component set key"),
+            }),
+          )
+          .optional()
+          .describe("Preferred values for INSTANCE_SWAP properties"),
+        description: z.string().optional().describe("New property description"),
+      })
+      .describe("Fields to change"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("edit_component_property", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error editing component property", error);
+    }
+  },
+);
+
+// Delete Component Property Tool
+server.tool(
+  "delete_component_property",
+  "Delete a component property (BOOLEAN, TEXT, INSTANCE_SWAP) from a COMPONENT or COMPONENT_SET.",
+  {
+    nodeId: z.string().describe("ID of the COMPONENT or COMPONENT_SET"),
+    propertyName: z
+      .string()
+      .describe("Full property name including the #id suffix"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "delete_component_property",
+        params,
+      );
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error deleting component property", error);
+    }
+  },
+);
+
+// Reset Instance Overrides Tool
+server.tool(
+  "reset_instance_overrides",
+  "Reset all overrides on one or more component instances back to the main component. Returns {applied, failed, results}.",
+  {
+    nodeId: z.string().optional().describe("ID of a single INSTANCE"),
+    nodeIds: z
+      .array(z.string())
+      .optional()
+      .describe("IDs of several INSTANCE nodes (takes precedence over nodeId)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "reset_instance_overrides",
+        params,
+      );
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error resetting instance overrides", error);
+    }
+  },
+);
+
+const paintCommonSchema = {
+  opacity: z.number().min(0).max(1).optional().describe("Paint opacity (0-1)"),
+  visible: z.boolean().optional().describe("Paint visibility (default true)"),
+  blendMode: z.string().optional().describe("Blend mode (default NORMAL)"),
+};
+
+const paintInputSchema = z.union([
+  z.object({
+    type: z.literal("SOLID"),
+    color: rgbaSchema.describe("Color, RGBA 0-1"),
+    ...paintCommonSchema,
+    opacity: paintCommonSchema.opacity.describe(
+      "Paint opacity (0-1), overrides color.a",
+    ),
+  }),
+  z.object({
+    type: gradientSchema.gradientType,
+    stops: gradientSchema.stops,
+    angle: gradientSchema.angle,
+    ...paintCommonSchema,
+  }),
+  z.object({
+    type: z.literal("IMAGE"),
+    imageHash: z
+      .string()
+      .describe("Hash of an image already in the file (e.g. from set_image_fill)"),
+    scaleMode: z
+      .enum(["FILL", "FIT", "TILE"])
+      .optional()
+      .describe("Image scale mode (default FILL)"),
+    ...paintCommonSchema,
+  }),
+]);
+
+// Set Fills Tool
+server.tool(
+  "set_fills",
+  "Replace all fills or strokes of a node with a list of paints (solid, gradient, image). Array order follows Figma: index 0 is the bottom-most paint, the last item is on top. paints: [] removes all paints.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    target: z
+      .enum(["fills", "strokes"])
+      .optional()
+      .describe("Paint list to replace (default fills)"),
+    paints: z
+      .array(paintInputSchema)
+      .describe("Paints, bottom-most first; [] removes all"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_fills", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting fills", error);
+    }
+  },
+);
+
+// Get Available Fonts Tool
+server.tool(
+  "get_available_fonts",
+  "List fonts available to the Figma plugin (same as the font picker), grouped by family with their style names. Use the exact family/style with create_text, set_text_properties or text styles.",
+  {
+    family: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Only families containing this text (case-insensitive)"),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Maximum number of families to return (default 200)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("get_available_fonts", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error listing fonts", error);
+    }
+  },
+);
+
+// Set Layout Child Tool
+server.tool(
+  "set_layout_child",
+  "Set how a node behaves inside its auto-layout parent. HORIZONTAL/VERTICAL parents: layoutGrow (0 fixed, 1 fill the primary axis) and layoutAlign (STRETCH fills the counter axis). GRID parents: cell position (gridRow + gridColumn, 0-based), spans and cell alignment. For fill/hug sizing see also set_layout_sizing.",
+  {
+    nodeId: z.string().describe("ID of the auto-layout child"),
+    layoutGrow: z
+      .number()
+      .min(0)
+      .optional()
+      .describe("Flex parents: 0 = fixed size, 1 = grow along the primary axis"),
+    layoutAlign: z
+      .enum(["MIN", "CENTER", "MAX", "STRETCH", "INHERIT"])
+      .optional()
+      .describe("Flex parents: counter-axis alignment; STRETCH fills it"),
+    gridRow: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Grid parents: 0-based row index (requires gridColumn)"),
+    gridColumn: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Grid parents: 0-based column index (requires gridRow)"),
+    gridRowSpan: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Grid parents: number of rows the node spans"),
+    gridColumnSpan: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Grid parents: number of columns the node spans"),
+    gridChildHorizontalAlign: z
+      .enum(["MIN", "CENTER", "MAX", "AUTO"])
+      .optional()
+      .describe("Grid parents: horizontal alignment inside the cell"),
+    gridChildVerticalAlign: z
+      .enum(["MIN", "CENTER", "MAX", "AUTO"])
+      .optional()
+      .describe("Grid parents: vertical alignment inside the cell"),
+  },
+  async (params: any) => {
+    try {
+      if ((params.gridRow === undefined) !== (params.gridColumn === undefined)) {
+        throw new Error("gridRow and gridColumn must be given together");
+      }
+      const result = await sendCommandToFigma("set_layout_child", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting layout child properties", error);
+    }
+  },
+);
+
+// Create Grid Style Tool
+server.tool(
+  "create_grid_style",
+  "Create a local grid style (layout grid token), e.g. 'Grid/12 columns'. Uses the same grid format as set_layout_grids. Returns the style id for apply_grid_style; delete it with delete_style.",
+  {
+    name: z.string().min(1).describe("Style name, e.g. 'Grid/Desktop 12 col'"),
+    grids: layoutGridsSchema.min(1).describe("Layout grids of the style"),
+    description: z.string().optional().describe("Style description"),
+  },
+  async (params: any) => {
+    try {
+      validateLayoutGrids(params.grids);
+      const result = await sendCommandToFigma("create_grid_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating grid style", error);
+    }
+  },
+);
+
+// Update Grid Style Tool
+server.tool(
+  "update_grid_style",
+  "Update the name, description or layout grids of a local grid style. Nodes using the style update automatically.",
+  {
+    styleId: z
+      .string()
+      .describe("ID of the grid style (from get_styles or create_grid_style)"),
+    name: z.string().min(1).optional().describe("New style name"),
+    grids: layoutGridsSchema
+      .optional()
+      .describe("New layout grids, replacing the old ones"),
+    description: z.string().optional().describe("New description"),
+  },
+  async (params: any) => {
+    try {
+      if (params.grids) validateLayoutGrids(params.grids);
+      const result = await sendCommandToFigma("update_grid_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error updating grid style", error);
+    }
+  },
+);
+
+// Apply Grid Style Tool
+server.tool(
+  "apply_grid_style",
+  "Apply a grid style to one or more frames, components or instances. Pass styleId '' to detach. Reports per-node success.",
+  {
+    styleId: z
+      .string()
+      .describe("ID of the grid style to apply, or '' to detach"),
+    nodeId: z.string().optional().describe("ID of a single node"),
+    nodeIds: z.array(z.string()).optional().describe("IDs of multiple nodes"),
+  },
+  async ({ styleId, nodeId, nodeIds }: any) => {
+    try {
+      const result = await sendCommandToFigma("apply_grid_style", {
+        styleId,
+        nodeId,
+        nodeIds,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error applying grid style", error);
+    }
+  },
+);
+
+// Set Export Settings Tool
+server.tool(
+  "set_export_settings",
+  "Replace the export settings stored on a node (the Export panel in Figma). Pass settings: [] to remove all. This only configures exports; to export now use export_node_as_image or download_design_assets.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    settings: z
+      .array(
+        z.object({
+          format: z.enum(["PNG", "JPG", "SVG", "PDF"]),
+          suffix: z
+            .string()
+            .optional()
+            .describe("File name suffix, e.g. '@2x'"),
+          constraint: z
+            .object({
+              type: z.enum(["SCALE", "WIDTH", "HEIGHT"]),
+              value: z.number().positive(),
+            })
+            .optional()
+            .describe("PNG/JPG only: scale factor or target width/height in pixels"),
+          contentsOnly: z
+            .boolean()
+            .optional()
+            .describe("Export only the node contents (default true)"),
+          useAbsoluteBounds: z
+            .boolean()
+            .optional()
+            .describe("Use the full node bounds, even if cropped or empty"),
+          colorProfile: z
+            .enum(["DOCUMENT", "SRGB", "DISPLAY_P3_V4"])
+            .optional()
+            .describe("Color profile of the export"),
+          svgOutlineText: z
+            .boolean()
+            .optional()
+            .describe("SVG only: render text as outlines (default true)"),
+          svgIdAttribute: z
+            .boolean()
+            .optional()
+            .describe("SVG only: include layer names as id attributes"),
+          svgSimplifyStroke: z
+            .boolean()
+            .optional()
+            .describe("SVG only: simplify inside/outside strokes"),
+        }),
+      )
+      .describe("Export settings, in panel order; [] removes all"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_export_settings", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting export settings", error);
+    }
+  },
+);
+
+// Create Slice Tool
+server.tool(
+  "create_slice",
+  "Create a slice (an export region independent of layers). Add export formats to it with set_export_settings.",
+  {
+    x: z.number().describe("X position (relative to the parent)"),
+    y: z.number().describe("Y position (relative to the parent)"),
+    width: z.number().positive().describe("Width in pixels"),
+    height: z.number().positive().describe("Height in pixels"),
+    name: z.string().optional().describe("Layer name"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID (default: current page)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_slice", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating slice", error);
     }
   },
 );
@@ -6539,6 +7463,250 @@ server.tool(
       });
     } catch (error) {
       return errorResult("Error downloading design assets", error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// REST tools: comments, versions and team libraries (no plugin needed)
+// ---------------------------------------------------------------------------
+
+const REST_KEY_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+const restFileSchema = {
+  fileUrl: z
+    .string()
+    .optional()
+    .describe("Figma file/design URL (alternative to fileKey)"),
+  fileKey: z
+    .string()
+    .regex(REST_KEY_PATTERN, "fileKey may only contain letters, digits, _ and -")
+    .optional()
+    .describe("Figma file key (alternative to fileUrl)"),
+};
+
+// The key parsed from fileUrl must pass the same check as a given fileKey
+function resolveRestFileKey(fileUrl?: string, fileKey?: string): string {
+  const key = resolveFileTarget(fileUrl, fileKey).fileKey;
+  if (!REST_KEY_PATTERN.test(key)) {
+    throw new Error(`Invalid Figma file key: ${key}`);
+  }
+  return key;
+}
+
+const teamPageSchema = {
+  teamId: z
+    .string()
+    .regex(REST_KEY_PATTERN, "teamId may only contain letters, digits, _ and -")
+    .describe("Team ID, from figma.com/files/team/<teamId>/..."),
+  pageSize: z
+    .number()
+    .int()
+    .min(1)
+    .max(1000)
+    .optional()
+    .describe("Items per page (Figma default 30)"),
+  cursor: z
+    .number()
+    .int()
+    .optional()
+    .describe("Pagination cursor: nextCursor from the previous page"),
+};
+
+function summarizeTeamLibraryItem(item: any) {
+  return {
+    key: item.key,
+    name: item.name,
+    description: item.description || undefined,
+    styleType: item.style_type,
+    fileKey: item.file_key,
+    nodeId: item.node_id,
+    containingFrame: item.containing_frame?.name,
+    containingPage: item.containing_frame?.pageName,
+    componentSet: item.containing_frame?.containingComponentSet?.name,
+    thumbnailUrl: item.thumbnail_url,
+  };
+}
+
+// Get Comments Tool (REST API)
+server.tool(
+  "get_comments",
+  "Read the comments of a Figma file through the REST API (requires FIGMA_ACCESS_TOKEN with file_comments:read). Replies carry parentId; nodeId is set for comments pinned to a node.",
+  { ...restFileSchema },
+  async ({ fileUrl, fileKey }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      const data = await getFileComments(token, target.fileKey);
+      const comments = (data.comments || []).map((c: any) => ({
+        id: c.id,
+        message: c.message,
+        user: c.user?.handle,
+        createdAt: c.created_at,
+        resolvedAt: c.resolved_at || null,
+        nodeId: c.client_meta?.node_id,
+        parentId: c.parent_id || undefined,
+      }));
+      return jsonResult({
+        fileKey: target.fileKey,
+        count: comments.length,
+        comments,
+      });
+    } catch (error) {
+      return errorResult("Error reading comments", error);
+    }
+  },
+);
+
+// Post Comment Tool (REST API)
+server.tool(
+  "post_comment",
+  "Post a REAL comment (or a reply) to a Figma file through the REST API. The comment is published under the token owner's account and is immediately visible to every collaborator, and may trigger notifications; only use it when the user explicitly asks to comment. Requires FIGMA_ACCESS_TOKEN with file_comments:write.",
+  {
+    ...restFileSchema,
+    message: z.string().min(1).max(5000).describe("Comment text"),
+    nodeId: z
+      .string()
+      .regex(/^[A-Za-z0-9:;_-]+$/, "nodeId must look like 1:2, 1-2 or I1:2;3:4")
+      .optional()
+      .describe("Pin a new comment thread to this node (e.g. 1:2 or 1-2); not allowed with commentId"),
+    commentId: z
+      .string()
+      .regex(/^\d+$/, "commentId must be numeric")
+      .optional()
+      .describe("Reply to this top-level comment ID instead of starting a thread"),
+  },
+  async ({ fileUrl, fileKey, message, nodeId, commentId }: any) => {
+    try {
+      if (commentId && nodeId) {
+        throw new Error(
+          "commentId and nodeId cannot be combined: a reply inherits the position of its thread",
+        );
+      }
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      const body: PostCommentBody = { message };
+      if (commentId) body.comment_id = commentId;
+      else if (nodeId) {
+        body.client_meta = {
+          node_id: normalizeNodeId(nodeId),
+          node_offset: { x: 0, y: 0 },
+        };
+      }
+      const c = await postFileComment(token, target.fileKey, body);
+      return jsonResult({
+        fileKey: target.fileKey,
+        id: c.id,
+        message: c.message,
+        user: c.user?.handle,
+        createdAt: c.created_at,
+        nodeId: c.client_meta?.node_id,
+        parentId: c.parent_id || undefined,
+      });
+    } catch (error) {
+      return errorResult("Error posting comment", error);
+    }
+  },
+);
+
+// Get File Versions Tool (REST API)
+server.tool(
+  "get_file_versions",
+  "List the version history of a Figma file through the REST API (requires FIGMA_ACCESS_TOKEN), newest first. Paginated: pass a version id as before (older) or after (newer); see pagination in the result.",
+  {
+    ...restFileSchema,
+    pageSize: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe("Versions per page (Figma default 30, max 50)"),
+    before: z
+      .number()
+      .int()
+      .optional()
+      .describe("Only versions created before this version id"),
+    after: z
+      .number()
+      .int()
+      .optional()
+      .describe("Only versions created after this version id"),
+  },
+  async ({ fileUrl, fileKey, pageSize, before, after }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const target = { fileKey: resolveRestFileKey(fileUrl, fileKey) };
+      const data = await getFileVersions(token, target.fileKey, {
+        pageSize,
+        before,
+        after,
+      });
+      const versions = (data.versions || []).map((v: any) => ({
+        id: v.id,
+        label: v.label || null,
+        description: v.description || null,
+        createdAt: v.created_at,
+        user: v.user?.handle,
+      }));
+      return jsonResult({
+        fileKey: target.fileKey,
+        count: versions.length,
+        versions,
+        pagination: data.pagination || null,
+      });
+    } catch (error) {
+      return errorResult("Error reading file versions", error);
+    }
+  },
+);
+
+// Get Team Components Tool (REST API)
+server.tool(
+  "get_team_components",
+  "List the published components of a team library through the REST API (requires FIGMA_ACCESS_TOKEN with team_library_content:read). Use the key with create_component_instance. Paginated: pass nextCursor as cursor to get the next page.",
+  { ...teamPageSchema },
+  async ({ teamId, pageSize, cursor }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const data = await getTeamComponents(token, teamId, {
+        pageSize,
+        after: cursor,
+      });
+      const items = data.meta?.components || [];
+      return jsonResult({
+        teamId,
+        count: items.length,
+        nextCursor: data.meta?.cursor?.after ?? null,
+        components: items.map(summarizeTeamLibraryItem),
+      });
+    } catch (error) {
+      return errorResult("Error reading team components", error);
+    }
+  },
+);
+
+// Get Team Styles Tool (REST API)
+server.tool(
+  "get_team_styles",
+  "List the published styles of a team library through the REST API (requires FIGMA_ACCESS_TOKEN with team_library_content:read). Use the key with import_style_by_key. Paginated: pass nextCursor as cursor to get the next page.",
+  { ...teamPageSchema },
+  async ({ teamId, pageSize, cursor }: any) => {
+    try {
+      const token = requireFigmaToken();
+      const data = await getTeamStyles(token, teamId, {
+        pageSize,
+        after: cursor,
+      });
+      const items = data.meta?.styles || [];
+      return jsonResult({
+        teamId,
+        count: items.length,
+        nextCursor: data.meta?.cursor?.after ?? null,
+        styles: items.map(summarizeTeamLibraryItem),
+      });
+    } catch (error) {
+      return errorResult("Error reading team styles", error);
     }
   },
 );

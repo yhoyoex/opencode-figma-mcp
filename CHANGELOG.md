@@ -15,8 +15,28 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
   - Inspeksi: `get_node_css`, `find_nodes`.
   - FigJam: `create_sticky`, `create_shape_with_text`, `create_table`.
   - Shared plugin data: `set_shared_plugin_data`, `get_shared_plugin_data`.
+- 24 tool baru (total 133):
+  - Variable: `update_variable` (nama, deskripsi, scopes, hiddenFromPublishing, code syntax), `update_variable_collection`, `manage_variable_modes` (tambah/ganti nama/hapus mode), `set_variable_mode` (mode eksplisit per node, mis. frame ke Dark).
+  - Team library: `get_library_variable_collections`, `get_library_variables`, `import_variable_by_key`, `import_style_by_key`.
+  - Component: `edit_component_property`, `delete_component_property`, `reset_instance_overrides`.
+  - Styling dan layout: `set_fills` (ganti seluruh fills/strokes dengan daftar paint), `set_layout_child` (perilaku child di auto-layout, termasuk posisi sel GRID), `create_grid_style`, `update_grid_style`, `apply_grid_style`.
+  - Teks: `get_available_fonts` (daftar font yang tersedia di plugin).
+  - Export: `set_export_settings` (pengaturan Export panel di node), `create_slice`.
+  - REST API (butuh `FIGMA_ACCESS_TOKEN`): `get_comments`, `post_comment`, `get_file_versions`, `get_team_components`, `get_team_styles`. `post_comment` menulis komentar sungguhan yang langsung terlihat semua kolaborator.
+- Pemeriksaan tipe: devDependency `@figma/plugin-typings`, `tsconfig.plugin.json`, serta script `bun run typecheck` (server) dan `bun run typecheck:plugin` (plugin; saat ini masih ada 131 error lama).
+
+### Changed
+
+- `get_node_info` dan `get_nodes_info` menerima `detail: "full"` untuk data node yang lebih lengkap (constraints, effects, style id, bound variables, properti component, field auto-layout, detail stroke).
+- `create_text` menerima `fontFamily` dan `fontStyle`.
+- `set_layout_mode` mendukung mode `GRID` (`gridRowCount`, `gridColumnCount`, gap, ukuran track, `gridAutoTracks`), serta `counterAxisAlignContent` dan `strokesIncludedInLayout`.
+- `set_text_properties` mendukung hyperlink (http/https/mailto), `listType`, indentasi, `textTruncation`, dan `maxLines`.
+- Manifest plugin kini meminta permission `teamlibrary`; plugin harus di-reload atau di-link ulang di Figma.
 
 ### Fixed
+
+- `create_connections` tidak lagi melempar `ReferenceError` di blok catch (sebelumnya memakai variabel `startNodeId` yang tidak terdefinisi).
+- `create_text` kini menunggu `setCharacters` selesai sebelum mengembalikan hasil.
 
 - Instalasi langsung dari GitHub (`npx -p github:yhoyoex/opencode-figma-mcp opencode-figma-relay`) kini menyertakan relay; sebelumnya gagal dengan `command not found` karena paket tidak dibangun saat diinstal.
 - Relay tidak lagi mencetak payload lengkap ke log kecuali `RELAY_DEBUG=1`; log sebelumnya bisa membengkak puluhan GB karena node tree Figma berukuran MB.
