@@ -3,7 +3,7 @@
 **OpenCode Figma MCP** is a Model Context Protocol (MCP) server that connects AI coding agents — [OpenCode](https://opencode.ai) and Claude Code — to Figma. It works in both directions:
 
 - **Design → Code**: read a frame, component, or a Figma URL and get a compact, code-oriented spec (layout, auto-layout, typography, colors, effects, variables, component props) plus downloadable SVG/PNG assets, so the agent can generate UI code that matches the design.
-- **Code → Design**: create and edit Figma content from the agent — frames, shapes, text, auto-layout, components, instances, variables, annotations, prototypes, and more (79 tools).
+- **Code → Design**: create and edit Figma content from the agent — frames, shapes, text, auto-layout, components, instances, variables, annotations, prototypes, and more (109 tools).
 
 ```
 OpenCode / Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ Relay (localhost:3055) ←(WebSocket)→ Figma Plugin
@@ -231,12 +231,18 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `create_section` - Create a section to group related content on the canvas
 - `create_text` - Create a new text node with customizable font properties
 - `create_node_from_svg` - Create editable vector nodes from SVG markup (e.g. replace PNG icons with vectors), optionally inside a parent at a given position
+- `create_ellipse` - Create an ellipse (circle/oval)
+- `create_line` - Create a line
+- `create_polygon` - Create a polygon with a given number of sides
+- `create_star` - Create a star with a given number of points
+- `create_vector` - Create a vector node from path data
 
 ### Modifying text content
 
 - `scan_text_nodes` - Scan text nodes with intelligent chunking for large designs
 - `set_text_content` - Set the text content of a single text node
 - `set_multiple_text_contents` - Batch update multiple text nodes efficiently
+- `set_text_properties` - Set font family/style/size, line height, letter spacing, text case, fill and alignment, optionally for a character range
 
 ### Auto Layout & Spacing
 
@@ -252,6 +258,11 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `set_stroke_color` - Set the stroke color and weight of a node
 - `set_corner_radius` - Set the corner radius of a node with optional per-corner control
 - `set_image_fill` - Fill a node with an image from a local file path, URL, or base64 data (FILL, FIT, CROP, or TILE)
+- `set_gradient_fill` - Fill a node with a linear, radial, angular or diamond gradient
+- `set_stroke_properties` - Set stroke weight, alignment, dash pattern, caps and joins
+- `set_node_properties` - Set opacity, rotation, blend mode, locked, mask, and min/max size
+- `set_constraints` - Set horizontal and vertical constraints of a node
+- `set_layout_grids` - Set layout grids (columns, rows, grid) on a frame
 
 ### Layout & Organization
 
@@ -262,6 +273,12 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `clone_node` - Create a copy of an existing node with optional position offset
 - `rename_node` - Rename a node
 - `set_parent` - Move a node into a new parent (section, frame or group), preserving its absolute position by default
+- `group_nodes` - Group nodes
+- `ungroup_node` - Ungroup a group, keeping its children
+- `boolean_operation` - Combine nodes with UNION, SUBTRACT, INTERSECT or EXCLUDE
+- `flatten_nodes` - Flatten nodes into a single vector
+- `reorder_node` - Change a node's layer order (z-index) within its parent
+- `detach_instance` - Detach an instance from its main component into a frame
 
 ### Components & Styles
 
@@ -272,6 +289,9 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `set_text_decoration` - Set underline, strikethrough or none on text nodes, optionally for a character range
 - `set_visible` - Show or hide nodes, including children inside instances (visibility override)
 - `get_main_component` - Read the main component / variant of instances directly in the plugin (no REST API)
+- `create_paint_style` - Create a local paint (color) style
+- `update_paint_style` - Update the name, description or paints of a paint style
+- `apply_paint_style` - Apply a paint style to the fills or strokes of one or more nodes
 - `delete_style` - Delete a local text, paint, effect or grid style
 - `set_effects` - Set drop/inner shadows and layer/background blur on a node (empty array clears)
 - `create_effect_style` - Create a local effect style (shadow/blur token)
@@ -295,6 +315,28 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `delete_variable` - Permanently delete a variable (destructive; bound nodes lose the binding)
 - `delete_variable_collection` - Permanently delete a collection with all its variables and modes (destructive)
 - `bind_variable` - Bind (or unbind with `variableId: null`) a variable to fills/strokes, size, spacing, padding, corner radius, stroke weight, opacity, characters or visibility
+
+### Pages
+
+- `get_pages` - List pages of the document
+- `create_page` - Create a new page
+- `set_current_page` - Switch to another page
+
+### Inspection
+
+- `get_node_css` - Get the CSS of a node generated by Figma
+- `find_nodes` - Find nodes by name and/or type
+
+### FigJam
+
+- `create_sticky` - Create a sticky note
+- `create_shape_with_text` - Create a FigJam shape with text
+- `create_table` - Create a FigJam table
+
+### Plugin Data
+
+- `set_shared_plugin_data` - Store shared plugin data (namespace/key/value) on a node
+- `get_shared_plugin_data` - Read shared plugin data from a node
 
 ### Export & Advanced
 

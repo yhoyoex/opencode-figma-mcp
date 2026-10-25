@@ -4,6 +4,18 @@ Semua perubahan penting pada OpenCode Figma MCP dicatat di sini. Format mengikut
 
 ## [Unreleased]
 
+### Added
+
+- 30 tool baru (total 109):
+  - Bentuk: `create_ellipse`, `create_line`, `create_polygon`, `create_star`, `create_vector`.
+  - Struktur layer: `group_nodes`, `ungroup_node`, `boolean_operation`, `flatten_nodes`, `reorder_node`, `detach_instance`.
+  - Teks dan properti node: `set_text_properties` (font, line height, letter spacing, text case, fill, alignment; bisa per range), `set_node_properties`, `set_stroke_properties`, `set_gradient_fill`, `set_constraints`, `set_layout_grids`.
+  - Paint style: `create_paint_style`, `update_paint_style`, `apply_paint_style`.
+  - Halaman: `get_pages`, `create_page`, `set_current_page`.
+  - Inspeksi: `get_node_css`, `find_nodes`.
+  - FigJam: `create_sticky`, `create_shape_with_text`, `create_table`.
+  - Shared plugin data: `set_shared_plugin_data`, `get_shared_plugin_data`.
+
 ### Fixed
 
 - Instalasi langsung dari GitHub (`npx -p github:yhoyoex/opencode-figma-mcp opencode-figma-relay`) kini menyertakan relay; sebelumnya gagal dengan `command not found` karena paket tidak dibangun saat diinstal.

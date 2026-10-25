@@ -2962,7 +2962,37 @@ type FigmaCommand =
   | "update_effect_style"
   | "apply_effect_style"
   | "get_design_context"
-  | "export_node_assets";
+  | "export_node_assets"
+  | "create_ellipse"
+  | "create_line"
+  | "create_polygon"
+  | "create_star"
+  | "create_vector"
+  | "group_nodes"
+  | "ungroup_node"
+  | "boolean_operation"
+  | "flatten_nodes"
+  | "set_text_properties"
+  | "set_node_properties"
+  | "set_gradient_fill"
+  | "create_paint_style"
+  | "update_paint_style"
+  | "apply_paint_style"
+  | "set_stroke_properties"
+  | "get_pages"
+  | "create_page"
+  | "set_current_page"
+  | "detach_instance"
+  | "set_constraints"
+  | "set_layout_grids"
+  | "reorder_node"
+  | "get_node_css"
+  | "find_nodes"
+  | "create_sticky"
+  | "create_shape_with_text"
+  | "create_table"
+  | "set_shared_plugin_data"
+  | "get_shared_plugin_data";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -3237,6 +3267,207 @@ type CommandParams = {
     description?: string;
   };
   apply_effect_style: { styleId: string; nodeId?: string; nodeIds?: string[] };
+  create_ellipse: ShapeParams & {
+    arcData?: {
+      startingAngle?: number;
+      endingAngle?: number;
+      innerRadius?: number;
+    };
+  };
+  create_line: {
+    x: number;
+    y: number;
+    length: number;
+    rotation?: number;
+    name?: string;
+    parentId?: string;
+    strokeColor?: RGBAInput;
+    strokeWeight?: number;
+  };
+  create_polygon: ShapeParams & { pointCount?: number };
+  create_star: ShapeParams & { pointCount?: number; innerRadius?: number };
+  create_vector: {
+    x: number;
+    y: number;
+    name?: string;
+    parentId?: string;
+    paths: Array<{ data: string; windingRule?: "NONZERO" | "EVENODD" }>;
+    fillColor?: RGBAInput;
+    strokeColor?: RGBAInput;
+    strokeWeight?: number;
+  };
+  group_nodes: { nodeIds: string[]; name?: string };
+  ungroup_node: { nodeId: string };
+  boolean_operation: {
+    nodeIds: string[];
+    operation: "UNION" | "SUBTRACT" | "INTERSECT" | "EXCLUDE";
+    name?: string;
+  };
+  flatten_nodes: { nodeIds: string[]; name?: string };
+  set_text_properties: {
+    nodeId: string;
+    start?: number;
+    end?: number;
+    fontFamily?: string;
+    fontStyle?: string;
+    fontSize?: number;
+    lineHeight?: { unit: "PIXELS" | "PERCENT" | "AUTO"; value?: number };
+    letterSpacing?: { unit: "PIXELS" | "PERCENT"; value: number };
+    textCase?: string;
+    fillColor?: RGBAInput;
+    paragraphSpacing?: number;
+    textAlignHorizontal?: string;
+    textAlignVertical?: string;
+    textAutoResize?: string;
+  };
+  set_node_properties: {
+    nodeId?: string;
+    nodeIds?: string[];
+    opacity?: number;
+    rotation?: number;
+    blendMode?: string;
+    locked?: boolean;
+    isMask?: boolean;
+    minWidth?: number | null;
+    maxWidth?: number | null;
+    minHeight?: number | null;
+    maxHeight?: number | null;
+  };
+  set_gradient_fill: GradientInput & {
+    nodeId: string;
+    target?: "fill" | "stroke";
+    append?: boolean;
+  };
+  create_paint_style: Partial<GradientInput> & {
+    name: string;
+    color?: RGBAInput;
+    description?: string;
+  };
+  update_paint_style: Partial<GradientInput> & {
+    styleId: string;
+    name?: string;
+    color?: RGBAInput;
+    description?: string;
+  };
+  apply_paint_style: {
+    nodeId: string;
+    styleId: string;
+    target?: "fill" | "stroke";
+  };
+  set_stroke_properties: {
+    nodeId: string;
+    strokeWeight?: number;
+    strokeAlign?: "INSIDE" | "OUTSIDE" | "CENTER";
+    dashPattern?: number[];
+    strokeCap?: string;
+    strokeJoin?: "MITER" | "BEVEL" | "ROUND";
+    strokeTopWeight?: number;
+    strokeRightWeight?: number;
+    strokeBottomWeight?: number;
+    strokeLeftWeight?: number;
+  };
+  get_pages: Record<string, never>;
+  create_page: { name?: string; switchTo?: boolean };
+  set_current_page: { pageId: string };
+  detach_instance: { nodeId: string };
+  set_constraints: {
+    nodeId: string;
+    horizontal?: ConstraintInput;
+    vertical?: ConstraintInput;
+  };
+  set_layout_grids: { nodeId: string; grids: LayoutGridInput[] };
+  reorder_node: {
+    nodeId: string;
+    position: "FRONT" | "BACK" | "FORWARD" | "BACKWARD" | "INDEX";
+    index?: number;
+  };
+  get_node_css: { nodeId: string };
+  find_nodes: {
+    parentId?: string;
+    nameContains?: string;
+    nameRegex?: string;
+    types?: string[];
+    limit?: number;
+    includeHidden?: boolean;
+  };
+  create_sticky: {
+    text: string;
+    x?: number;
+    y?: number;
+    color?: RGBAInput;
+    authorVisible?: boolean;
+    parentId?: string;
+  };
+  create_shape_with_text: {
+    shapeType: string;
+    text?: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    fillColor?: RGBAInput;
+    parentId?: string;
+  };
+  create_table: {
+    rows?: number;
+    columns?: number;
+    x?: number;
+    y?: number;
+    cells?: string[][];
+    parentId?: string;
+  };
+  set_shared_plugin_data: {
+    nodeId: string;
+    namespace: string;
+    key: string;
+    value: string;
+  };
+  get_shared_plugin_data: { nodeId: string; namespace: string; key?: string };
+};
+
+type ConstraintInput = "MIN" | "CENTER" | "MAX" | "STRETCH" | "SCALE";
+
+type LayoutGridInput =
+  | {
+      pattern: "GRID";
+      sectionSize: number;
+      visible?: boolean;
+      color?: RGBAInput;
+    }
+  | {
+      pattern: "COLUMNS" | "ROWS";
+      alignment: "MIN" | "MAX" | "STRETCH" | "CENTER";
+      count: number | "AUTO";
+      gutterSize: number;
+      offset?: number;
+      sectionSize?: number;
+      visible?: boolean;
+      color?: RGBAInput;
+    };
+
+type RGBAInput = { r: number; g: number; b: number; a?: number };
+
+type ShapeParams = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  name?: string;
+  parentId?: string;
+  fillColor?: RGBAInput;
+  strokeColor?: RGBAInput;
+  strokeWeight?: number;
+};
+
+type GradientInput = {
+  gradientType:
+    | "GRADIENT_LINEAR"
+    | "GRADIENT_RADIAL"
+    | "GRADIENT_ANGULAR"
+    | "GRADIENT_DIAMOND";
+  stops: Array<{ position: number; color: RGBAInput }>;
+  angle?: number;
+  gradientTransform?: number[][];
 };
 
 type TextStyleProps = {
@@ -4838,6 +5069,1110 @@ server.tool(
       return jsonResult(result);
     } catch (error) {
       return errorResult("Error applying effect style", error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Shape, boolean, property, gradient & paint style tools
+// ---------------------------------------------------------------------------
+
+const shapeBaseSchema = {
+  x: z.number().describe("X position"),
+  y: z.number().describe("Y position"),
+  width: z.number().positive().describe("Width in pixels"),
+  height: z.number().positive().describe("Height in pixels"),
+  name: z.string().optional().describe("Optional name for the node"),
+  parentId: z
+    .string()
+    .optional()
+    .describe("Optional parent node ID (default: current page)"),
+  fillColor: rgbaSchema.optional().describe("Fill color, RGBA 0-1"),
+  strokeColor: rgbaSchema.optional().describe("Stroke color, RGBA 0-1"),
+  strokeWeight: z.number().min(0).optional().describe("Stroke weight"),
+};
+
+const gradientSchema = {
+  gradientType: z
+    .enum([
+      "GRADIENT_LINEAR",
+      "GRADIENT_RADIAL",
+      "GRADIENT_ANGULAR",
+      "GRADIENT_DIAMOND",
+    ])
+    .describe("Gradient type"),
+  stops: z
+    .array(
+      z.object({
+        position: z.number().min(0).max(1).describe("Stop position (0-1)"),
+        color: rgbaSchema.describe("Stop color, RGBA 0-1"),
+      }),
+    )
+    .min(2)
+    .describe("Color stops (at least 2)"),
+  angle: z
+    .number()
+    .optional()
+    .describe(
+      "Gradient angle in degrees around the node center (0 = left to right, 90 = top to bottom). Mainly for linear gradients",
+    ),
+  gradientTransform: z
+    .array(z.array(z.number()).length(3))
+    .length(2)
+    .optional()
+    .describe(
+      "Raw 2x3 gradient transform matrix [[a,b,tx],[c,d,ty]] in normalized node space; overrides angle",
+    ),
+};
+
+// Create Ellipse Tool
+server.tool(
+  "create_ellipse",
+  "Create an ellipse (circle, arc or donut via arcData) in Figma.",
+  {
+    ...shapeBaseSchema,
+    arcData: z
+      .object({
+        startingAngle: z
+          .number()
+          .optional()
+          .describe("Start angle in radians (default 0)"),
+        endingAngle: z
+          .number()
+          .optional()
+          .describe("End angle in radians (default 2π)"),
+        innerRadius: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("Inner radius ratio 0-1 for donuts (default 0)"),
+      })
+      .optional()
+      .describe("Optional arc settings for arcs/donuts"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_ellipse", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating ellipse", error);
+    }
+  },
+);
+
+// Create Line Tool
+server.tool(
+  "create_line",
+  "Create a straight line in Figma, starting at (x, y) with the given length and optional rotation.",
+  {
+    x: z.number().describe("Start X position"),
+    y: z.number().describe("Start Y position"),
+    length: z.number().positive().describe("Line length in pixels"),
+    rotation: z
+      .number()
+      .optional()
+      .describe("Rotation in degrees (Figma convention, counter-clockwise)"),
+    name: z.string().optional().describe("Optional name for the line"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID (default: current page)"),
+    strokeColor: rgbaSchema
+      .optional()
+      .describe("Stroke color, RGBA 0-1 (default black)"),
+    strokeWeight: z
+      .number()
+      .positive()
+      .optional()
+      .describe("Stroke weight (default 1)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_line", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating line", error);
+    }
+  },
+);
+
+// Create Polygon Tool
+server.tool(
+  "create_polygon",
+  "Create a regular polygon (triangle, hexagon, ...) in Figma.",
+  {
+    ...shapeBaseSchema,
+    pointCount: z
+      .number()
+      .int()
+      .min(3)
+      .optional()
+      .describe("Number of sides (default 3)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_polygon", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating polygon", error);
+    }
+  },
+);
+
+// Create Star Tool
+server.tool(
+  "create_star",
+  "Create a star shape in Figma.",
+  {
+    ...shapeBaseSchema,
+    pointCount: z
+      .number()
+      .int()
+      .min(3)
+      .optional()
+      .describe("Number of points (default 5)"),
+    innerRadius: z
+      .number()
+      .min(0)
+      .max(1)
+      .optional()
+      .describe("Inner radius ratio 0-1 (default 0.382)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_star", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating star", error);
+    }
+  },
+);
+
+// Create Vector Tool
+server.tool(
+  "create_vector",
+  "Create a vector node from SVG path data (e.g. 'M 0 0 L 10 10 Z'). Filled black when no fill or stroke is given. For full SVG markup use create_node_from_svg.",
+  {
+    x: z.number().describe("X position"),
+    y: z.number().describe("Y position"),
+    name: z.string().optional().describe("Optional name for the vector"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID (default: current page)"),
+    paths: z
+      .array(
+        z.object({
+          data: z.string().min(1).describe("SVG path data string"),
+          windingRule: z
+            .enum(["NONZERO", "EVENODD"])
+            .optional()
+            .describe("Fill rule (default NONZERO)"),
+        }),
+      )
+      .min(1)
+      .describe("Vector paths"),
+    fillColor: rgbaSchema.optional().describe("Fill color, RGBA 0-1"),
+    strokeColor: rgbaSchema.optional().describe("Stroke color, RGBA 0-1"),
+    strokeWeight: z.number().min(0).optional().describe("Stroke weight"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_vector", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating vector", error);
+    }
+  },
+);
+
+// Group Nodes Tool
+server.tool(
+  "group_nodes",
+  "Group nodes into a GROUP. All nodes must share the same parent.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("IDs of the nodes to group"),
+    name: z.string().optional().describe("Optional name for the group"),
+  },
+  async ({ nodeIds, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("group_nodes", { nodeIds, name });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error grouping nodes", error);
+    }
+  },
+);
+
+// Ungroup Node Tool
+server.tool(
+  "ungroup_node",
+  "Ungroup a GROUP node, moving its children into the group's parent. Returns the children IDs.",
+  {
+    nodeId: z.string().describe("ID of the GROUP node"),
+  },
+  async ({ nodeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("ungroup_node", { nodeId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error ungrouping node", error);
+    }
+  },
+);
+
+// Boolean Operation Tool
+server.tool(
+  "boolean_operation",
+  "Combine shapes with a boolean operation (union, subtract, intersect, exclude). All nodes must share the same parent; for SUBTRACT the bottom-most node is the base.",
+  {
+    nodeIds: z
+      .array(z.string())
+      .min(2)
+      .describe("IDs of the nodes to combine"),
+    operation: z
+      .enum(["UNION", "SUBTRACT", "INTERSECT", "EXCLUDE"])
+      .describe("Boolean operation"),
+    name: z.string().optional().describe("Optional name for the result"),
+  },
+  async ({ nodeIds, operation, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("boolean_operation", {
+        nodeIds,
+        operation,
+        name,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error running boolean operation", error);
+    }
+  },
+);
+
+// Flatten Nodes Tool
+server.tool(
+  "flatten_nodes",
+  "Flatten one or more nodes into a single vector. All nodes must share the same parent.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("IDs of the nodes to flatten"),
+    name: z.string().optional().describe("Optional name for the vector"),
+  },
+  async ({ nodeIds, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("flatten_nodes", {
+        nodeIds,
+        name,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error flattening nodes", error);
+    }
+  },
+);
+
+// Set Text Properties Tool
+server.tool(
+  "set_text_properties",
+  "Set typography of a TEXT node: font, size, line height, letter spacing, case and color, for the whole node or a character range [start, end). Paragraph spacing, alignment and auto-resize always apply to the whole node.",
+  {
+    nodeId: z.string().describe("ID of the text node"),
+    start: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Optional start character index (inclusive)"),
+    end: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Optional end character index (exclusive)"),
+    fontFamily: z
+      .string()
+      .optional()
+      .describe(
+        "Font family; without fontStyle the current style is kept (fallback Regular)",
+      ),
+    fontStyle: z
+      .string()
+      .optional()
+      .describe('Font style name as shown in Figma, e.g. "Regular", "Bold"'),
+    fontSize: z.number().positive().optional().describe("Font size in pixels"),
+    lineHeight: z
+      .union([
+        z.object({ unit: z.literal("AUTO") }),
+        z.object({
+          unit: z.enum(["PIXELS", "PERCENT"]),
+          value: z.number().finite(),
+        }),
+      ])
+      .optional()
+      .describe(
+        'Line height { unit, value }; value is required for PIXELS/PERCENT, omitted for "AUTO"',
+      ),
+    letterSpacing: z
+      .object({
+        unit: z.enum(["PIXELS", "PERCENT"]),
+        value: z.number().finite(),
+      })
+      .optional()
+      .describe("Letter spacing { unit, value }"),
+    textCase: z
+      .enum([
+        "ORIGINAL",
+        "UPPER",
+        "LOWER",
+        "TITLE",
+        "SMALL_CAPS",
+        "SMALL_CAPS_FORCED",
+      ])
+      .optional()
+      .describe("Text case"),
+    fillColor: rgbaSchema.optional().describe("Text color, RGBA 0-1"),
+    paragraphSpacing: z
+      .number()
+      .min(0)
+      .optional()
+      .describe("Paragraph spacing in pixels (whole node)"),
+    textAlignHorizontal: z
+      .enum(["LEFT", "CENTER", "RIGHT", "JUSTIFIED"])
+      .optional()
+      .describe("Horizontal alignment (whole node)"),
+    textAlignVertical: z
+      .enum(["TOP", "CENTER", "BOTTOM"])
+      .optional()
+      .describe("Vertical alignment (whole node)"),
+    textAutoResize: z
+      .enum(["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"])
+      .optional()
+      .describe("Auto-resize mode (whole node)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_text_properties", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting text properties", error);
+    }
+  },
+);
+
+// Set Node Properties Tool
+server.tool(
+  "set_node_properties",
+  "Set general properties (opacity, rotation, blend mode, lock, mask, min/max size) on one or more nodes. Properties a node does not have are reported as skipped. Reports per-node success.",
+  {
+    nodeId: z.string().optional().describe("ID of a single node"),
+    nodeIds: z.array(z.string()).optional().describe("IDs of multiple nodes"),
+    opacity: z.number().min(0).max(1).optional().describe("Opacity (0-1)"),
+    rotation: z
+      .number()
+      .optional()
+      .describe("Rotation in degrees (Figma convention, counter-clockwise)"),
+    blendMode: z
+      .enum([
+        "PASS_THROUGH",
+        "NORMAL",
+        "DARKEN",
+        "MULTIPLY",
+        "LINEAR_BURN",
+        "COLOR_BURN",
+        "LIGHTEN",
+        "SCREEN",
+        "LINEAR_DODGE",
+        "COLOR_DODGE",
+        "OVERLAY",
+        "SOFT_LIGHT",
+        "HARD_LIGHT",
+        "DIFFERENCE",
+        "EXCLUSION",
+        "HUE",
+        "SATURATION",
+        "COLOR",
+        "LUMINOSITY",
+      ])
+      .optional()
+      .describe("Layer blend mode"),
+    locked: z.boolean().optional().describe("Lock or unlock the node"),
+    isMask: z.boolean().optional().describe("Use the node as a mask"),
+    minWidth: z
+      .number()
+      .min(0)
+      .nullable()
+      .optional()
+      .describe("Min width (auto layout), null to reset"),
+    maxWidth: z
+      .number()
+      .min(0)
+      .nullable()
+      .optional()
+      .describe("Max width (auto layout), null to reset"),
+    minHeight: z
+      .number()
+      .min(0)
+      .nullable()
+      .optional()
+      .describe("Min height (auto layout), null to reset"),
+    maxHeight: z
+      .number()
+      .min(0)
+      .nullable()
+      .optional()
+      .describe("Max height (auto layout), null to reset"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_node_properties", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting node properties", error);
+    }
+  },
+);
+
+// Set Gradient Fill Tool
+server.tool(
+  "set_gradient_fill",
+  "Set a gradient (linear, radial, angular, diamond) as the fill or stroke of a node, replacing existing paints or appending to them.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    ...gradientSchema,
+    target: z
+      .enum(["fill", "stroke"])
+      .optional()
+      .describe("Apply to fills or strokes (default fill)"),
+    append: z
+      .boolean()
+      .optional()
+      .describe(
+        "true to add on top of existing paints, false to replace them (default false)",
+      ),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_gradient_fill", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting gradient fill", error);
+    }
+  },
+);
+
+const paintStyleGradientSchema = {
+  gradientType: gradientSchema.gradientType.optional(),
+  stops: gradientSchema.stops.optional(),
+  angle: gradientSchema.angle,
+  gradientTransform: gradientSchema.gradientTransform,
+};
+
+// Create Paint Style Tool
+server.tool(
+  "create_paint_style",
+  "Create a local paint style (color token) from a solid color or a gradient, e.g. 'Brand/Primary'. Returns the style id for apply_paint_style.",
+  {
+    name: z.string().min(1).describe("Style name, e.g. 'Brand/Primary'"),
+    color: rgbaSchema
+      .optional()
+      .describe("Solid color, RGBA 0-1 (or use gradientType + stops)"),
+    ...paintStyleGradientSchema,
+    description: z.string().optional().describe("Style description"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_paint_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating paint style", error);
+    }
+  },
+);
+
+// Update Paint Style Tool
+server.tool(
+  "update_paint_style",
+  "Update the name, description or paint (solid color or gradient) of a local paint style. Nodes using the style update automatically.",
+  {
+    styleId: z
+      .string()
+      .describe("ID of the paint style (from get_styles or create_paint_style)"),
+    name: z.string().min(1).optional().describe("New style name"),
+    color: rgbaSchema.optional().describe("New solid color, RGBA 0-1"),
+    ...paintStyleGradientSchema,
+    description: z.string().optional().describe("New description"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("update_paint_style", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error updating paint style", error);
+    }
+  },
+);
+
+// Apply Paint Style Tool
+server.tool(
+  "apply_paint_style",
+  "Apply a paint style to the fill or stroke of a node.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    styleId: z.string().describe("ID of the paint style to apply"),
+    target: z
+      .enum(["fill", "stroke"])
+      .optional()
+      .describe("Apply to fill or stroke (default fill)"),
+  },
+  async ({ nodeId, styleId, target }: any) => {
+    try {
+      const result = await sendCommandToFigma("apply_paint_style", {
+        nodeId,
+        styleId,
+        target,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error applying paint style", error);
+    }
+  },
+);
+
+// Set Stroke Properties Tool
+server.tool(
+  "set_stroke_properties",
+  "Set stroke properties of a node: weight, alignment, dash pattern, cap, join and per-side weights (frames/rectangles). Use set_stroke_color for the color.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    strokeWeight: z.number().min(0).optional().describe("Stroke weight"),
+    strokeAlign: z
+      .enum(["INSIDE", "OUTSIDE", "CENTER"])
+      .optional()
+      .describe("Stroke alignment"),
+    dashPattern: z
+      .array(z.number().min(0))
+      .optional()
+      .describe("Dash/gap lengths, e.g. [4, 2]; [] for a solid stroke"),
+    strokeCap: z
+      .enum([
+        "NONE",
+        "ROUND",
+        "SQUARE",
+        "ARROW_LINES",
+        "ARROW_EQUILATERAL",
+        "TRIANGLE_FILLED",
+        "DIAMOND_FILLED",
+        "CIRCLE_FILLED",
+      ])
+      .optional()
+      .describe("Stroke cap (lines/vectors)"),
+    strokeJoin: z
+      .enum(["MITER", "BEVEL", "ROUND"])
+      .optional()
+      .describe("Stroke join"),
+    strokeTopWeight: z.number().min(0).optional().describe("Top stroke weight"),
+    strokeRightWeight: z
+      .number()
+      .min(0)
+      .optional()
+      .describe("Right stroke weight"),
+    strokeBottomWeight: z
+      .number()
+      .min(0)
+      .optional()
+      .describe("Bottom stroke weight"),
+    strokeLeftWeight: z
+      .number()
+      .min(0)
+      .optional()
+      .describe("Left stroke weight"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_stroke_properties", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting stroke properties", error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Page, constraint, layout grid, ordering, search, FigJam & plugin data tools
+// ---------------------------------------------------------------------------
+
+// Get Pages Tool
+server.tool(
+  "get_pages",
+  "List all pages in the document with id, name and whether it is the current page. childCount is only included for the current page (other pages are not loaded).",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_pages");
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting pages", error);
+    }
+  },
+);
+
+// Create Page Tool
+server.tool(
+  "create_page",
+  "Create a new page in the document.",
+  {
+    name: z.string().optional().describe("Optional name for the new page"),
+    switchTo: z
+      .boolean()
+      .optional()
+      .describe("Switch to the new page after creating it (default false)"),
+  },
+  async ({ name, switchTo }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_page", {
+        name,
+        switchTo,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating page", error);
+    }
+  },
+);
+
+// Set Current Page Tool
+server.tool(
+  "set_current_page",
+  "Switch the current page in Figma. Other tools default to the current page.",
+  {
+    pageId: z.string().describe("ID of the page to switch to"),
+  },
+  async ({ pageId }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_current_page", { pageId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting current page", error);
+    }
+  },
+);
+
+// Detach Instance Tool
+server.tool(
+  "detach_instance",
+  "Detach a component instance, converting it into a regular frame. Returns the new frame.",
+  {
+    nodeId: z.string().describe("ID of the INSTANCE node to detach"),
+  },
+  async ({ nodeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("detach_instance", { nodeId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error detaching instance", error);
+    }
+  },
+);
+
+const constraintSchema = z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]);
+
+// Set Constraints Tool
+server.tool(
+  "set_constraints",
+  "Set resizing constraints of a node relative to its parent frame. Unspecified axes keep their current value. MIN = left/top, MAX = right/bottom, STRETCH = left & right / top & bottom.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    horizontal: constraintSchema
+      .optional()
+      .describe("Horizontal constraint"),
+    vertical: constraintSchema.optional().describe("Vertical constraint"),
+  },
+  async ({ nodeId, horizontal, vertical }: any) => {
+    try {
+      if (horizontal === undefined && vertical === undefined) {
+        throw new Error("Provide horizontal and/or vertical");
+      }
+      const result = await sendCommandToFigma("set_constraints", {
+        nodeId,
+        horizontal,
+        vertical,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting constraints", error);
+    }
+  },
+);
+
+const gridColorSchema = rgbaSchema
+  .optional()
+  .describe("Grid color, RGBA 0-1 (default red at 10% opacity)");
+
+// Set Layout Grids Tool
+server.tool(
+  "set_layout_grids",
+  "Replace the layout grids of a frame, component or instance. Pass an empty array to remove all grids.",
+  {
+    nodeId: z.string().describe("ID of the frame/component/instance"),
+    grids: z
+      .array(
+        z.union([
+          z.object({
+            pattern: z.literal("GRID").describe("Square grid"),
+            sectionSize: z
+              .number()
+              .positive()
+              .describe("Grid cell size in pixels"),
+            visible: z
+              .boolean()
+              .optional()
+              .describe("Whether the grid is visible (default true)"),
+            color: gridColorSchema,
+          }),
+          z.object({
+            pattern: z
+              .enum(["COLUMNS", "ROWS"])
+              .describe("Column or row grid"),
+            alignment: z
+              .enum(["MIN", "MAX", "STRETCH", "CENTER"])
+              .describe("Grid alignment within the frame"),
+            count: z
+              .union([z.number().int().positive(), z.literal("AUTO")])
+              .describe('Number of columns/rows, or "AUTO" to fill the frame'),
+            gutterSize: z
+              .number()
+              .min(0)
+              .describe("Gap between columns/rows in pixels"),
+            offset: z
+              .number()
+              .min(0)
+              .optional()
+              .describe(
+                "Margin from the frame edge in pixels (ignored for CENTER, default 0)",
+              ),
+            sectionSize: z
+              .number()
+              .positive()
+              .optional()
+              .describe(
+                "Column/row width in pixels; required unless alignment is STRETCH",
+              ),
+            visible: z
+              .boolean()
+              .optional()
+              .describe("Whether the grid is visible (default true)"),
+            color: gridColorSchema,
+          }),
+        ]),
+      )
+      .describe("Layout grids to set; [] removes all grids"),
+  },
+  async ({ nodeId, grids }: any) => {
+    try {
+      for (const grid of grids as LayoutGridInput[]) {
+        if (
+          grid.pattern !== "GRID" &&
+          grid.alignment !== "STRETCH" &&
+          grid.sectionSize === undefined
+        ) {
+          throw new Error(
+            `sectionSize is required for ${grid.pattern} grids with alignment ${grid.alignment}`,
+          );
+        }
+      }
+      const result = await sendCommandToFigma("set_layout_grids", {
+        nodeId,
+        grids,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting layout grids", error);
+    }
+  },
+);
+
+// Reorder Node Tool
+server.tool(
+  "reorder_node",
+  "Change the z-order (layer order) of a node within its parent. FRONT/BACK move to top/bottom, FORWARD/BACKWARD move one step, INDEX moves to an explicit child index (0 = backmost).",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    position: z
+      .enum(["FRONT", "BACK", "FORWARD", "BACKWARD", "INDEX"])
+      .describe("Where to move the node"),
+    index: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Target child index; required when position is INDEX"),
+  },
+  async ({ nodeId, position, index }: any) => {
+    try {
+      if (position === "INDEX" && index === undefined) {
+        throw new Error("index is required when position is INDEX");
+      }
+      const result = await sendCommandToFigma("reorder_node", {
+        nodeId,
+        position,
+        index,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error reordering node", error);
+    }
+  },
+);
+
+// Get Node CSS Tool
+server.tool(
+  "get_node_css",
+  "Get the CSS properties Figma generates for a node (same as Dev Mode's CSS panel), as a property → value object.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+  },
+  async ({ nodeId }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_node_css", { nodeId });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting node CSS", error);
+    }
+  },
+);
+
+// Find Nodes Tool
+server.tool(
+  "find_nodes",
+  "Search descendant nodes by name (substring or regex) and/or type. Use scan_nodes_by_types for type-only scans with progress; this tool focuses on name search.",
+  {
+    parentId: z
+      .string()
+      .optional()
+      .describe("Node to search within (default: current page)"),
+    nameContains: z
+      .string()
+      .optional()
+      .describe("Case-insensitive substring the node name must contain"),
+    nameRegex: z
+      .string()
+      .max(200)
+      .optional()
+      .describe(
+        "JavaScript regular expression the node name must match (max 200 characters)",
+      ),
+    types: z
+      .array(z.string())
+      .optional()
+      .describe("Node types to include, e.g. ['FRAME', 'TEXT']"),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .optional()
+      .describe("Maximum number of results (default 100, max 1000)"),
+    includeHidden: z
+      .boolean()
+      .optional()
+      .describe("Include hidden nodes and nodes inside hidden parents (default true)"),
+  },
+  async (params: any) => {
+    try {
+      if (params.nameRegex !== undefined) {
+        try {
+          new RegExp(params.nameRegex);
+        } catch (error) {
+          throw new Error(
+            `Invalid nameRegex: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      const result = await sendCommandToFigma("find_nodes", params, 60000);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error finding nodes", error);
+    }
+  },
+);
+
+// Create Sticky Tool
+server.tool(
+  "create_sticky",
+  "Create a sticky note (FigJam only).",
+  {
+    text: z.string().describe("Sticky note text"),
+    x: z.number().optional().describe("X position (default 0)"),
+    y: z.number().optional().describe("Y position (default 0)"),
+    color: rgbaSchema.optional().describe("Sticky fill color, RGBA 0-1"),
+    authorVisible: z
+      .boolean()
+      .optional()
+      .describe("Show the author name on the sticky"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID (default: current page)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_sticky", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating sticky", error);
+    }
+  },
+);
+
+// Create Shape With Text Tool
+server.tool(
+  "create_shape_with_text",
+  "Create a diagram shape with text (FigJam only).",
+  {
+    shapeType: z
+      .enum([
+        "SQUARE",
+        "ELLIPSE",
+        "ROUNDED_RECTANGLE",
+        "DIAMOND",
+        "TRIANGLE_UP",
+        "TRIANGLE_DOWN",
+        "PARALLELOGRAM_RIGHT",
+        "PARALLELOGRAM_LEFT",
+        "ENG_DATABASE",
+        "ENG_QUEUE",
+        "ENG_FILE",
+        "ENG_FOLDER",
+        "TRAPEZOID",
+        "PREDEFINED_PROCESS",
+        "SHIELD",
+        "DOCUMENT_SINGLE",
+        "DOCUMENT_MULTIPLE",
+        "MANUAL_INPUT",
+        "HEXAGON",
+        "CHEVRON",
+        "PENTAGON",
+        "OCTAGON",
+        "STAR",
+        "PLUS",
+        "ARROW_LEFT",
+        "ARROW_RIGHT",
+        "SUMMING_JUNCTION",
+        "OR",
+        "SPEECH_BUBBLE",
+        "INTERNAL_STORAGE",
+      ])
+      .describe("Shape type"),
+    text: z.string().optional().describe("Text inside the shape"),
+    x: z.number().optional().describe("X position (default 0)"),
+    y: z.number().optional().describe("Y position (default 0)"),
+    width: z.number().positive().optional().describe("Width in pixels"),
+    height: z.number().positive().optional().describe("Height in pixels"),
+    fillColor: rgbaSchema.optional().describe("Shape fill color, RGBA 0-1"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID (default: current page)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_shape_with_text", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating shape with text", error);
+    }
+  },
+);
+
+// Create Table Tool
+server.tool(
+  "create_table",
+  "Create a table, optionally filled with cell text (FigJam only).",
+  {
+    rows: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Number of rows (default 2)"),
+    columns: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Number of columns (default 2)"),
+    x: z.number().optional().describe("X position (default 0)"),
+    y: z.number().optional().describe("Y position (default 0)"),
+    cells: z
+      .array(z.array(z.string()))
+      .optional()
+      .describe("Cell text as rows of columns, e.g. [['A1','B1'],['A2','B2']]"),
+    parentId: z
+      .string()
+      .optional()
+      .describe("Optional parent node ID (default: current page)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("create_table", params);
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error creating table", error);
+    }
+  },
+);
+
+const pluginDataNamespaceSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9]{3,}$/)
+  .describe("Namespace (at least 3 alphanumeric characters)");
+
+// Set Shared Plugin Data Tool
+server.tool(
+  "set_shared_plugin_data",
+  "Store a string on a node as shared plugin data, readable by any plugin using the same namespace. An empty value deletes the key.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    namespace: pluginDataNamespaceSchema,
+    key: z.string().min(1).describe("Data key"),
+    value: z.string().describe("Value to store; empty string deletes the key"),
+  },
+  async ({ nodeId, namespace, key, value }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_shared_plugin_data", {
+        nodeId,
+        namespace,
+        key,
+        value,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error setting shared plugin data", error);
+    }
+  },
+);
+
+// Get Shared Plugin Data Tool
+server.tool(
+  "get_shared_plugin_data",
+  "Read shared plugin data from a node. Without key, returns all key/value pairs in the namespace.",
+  {
+    nodeId: z.string().describe("ID of the node"),
+    namespace: pluginDataNamespaceSchema,
+    key: z.string().optional().describe("Data key (omit to read all keys)"),
+  },
+  async ({ nodeId, namespace, key }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_shared_plugin_data", {
+        nodeId,
+        namespace,
+        key,
+      });
+      return jsonResult(result);
+    } catch (error) {
+      return errorResult("Error getting shared plugin data", error);
     }
   },
 );
