@@ -130,6 +130,28 @@ bun socket
 3. Select the `src/opencode_mcp_plugin/manifest.json` file
 4. The plugin should now be available in your Figma development plugins
 
+#### Dev Mode plugin (measurements)
+
+`add_measurement`, `edit_measurement` and `delete_measurement` only work in Dev Mode. Figma does not allow `dev` and `figjam` in one manifest, so a separate Dev Mode build is generated:
+
+1. Run `bun run build:plugin-dev` (writes `dist/opencode_mcp_plugin_dev/`)
+2. In Figma desktop, open a file in Dev Mode (Shift+D)
+3. Plugins > Development > Import plugin from manifest > select `dist/opencode_mcp_plugin_dev/manifest.json`
+4. Run it from the Plugins panel in Inspect and join a channel
+
+Notes: Dev Mode needs a Full or Dev seat (paid plan). **The Dev Mode plugin variant has not been tested in Figma yet.** Other write tools (create, modify, delete nodes) do not work in Dev Mode; use the main plugin for those.
+
+#### Plan limitations
+
+Some tools only work on a paid Figma plan. Found by a smoke test on a Free account:
+
+| Tool | Required plan | Behaviour on Free |
+| --- | --- | --- |
+| `add_measurement`, `edit_measurement`, `delete_measurement` | Paid plan, Full or Dev seat (Dev Mode) | Not available outside Dev Mode; `get_measurements` works in the normal editor |
+| `manage_variable_modes` (`add`), `create_variable_collection` with more than 1 mode | Paid plan | Error `Limited to 1 modes only` (Free allows 1 mode per collection) |
+| `extend_library_collection` | Enterprise | Error `Cannot create extended collections outside of enterprise plan.` |
+| `get_dev_resources`, `add_dev_resource`, `edit_dev_resource`, `delete_dev_resource` | Probably paid plan/seat (not confirmed) | 403 error |
+
 ## Windows + WSL Guide
 
 1. Install bun via powershell
@@ -210,15 +232,13 @@ Example prompt in OpenCode: *"Buat komponen React untuk https://www.figma.com/de
 - `get_annotation_categories` - List the annotation categories in the file (id, label, color, isPreset); use the id as `categoryId` in `set_annotation`
 - `create_annotation_category` - Create an annotation category
 - `get_measurements` - List Dev Mode measurements on the current page, optionally only those touching a node
-- `add_measurement` - Add a measurement between two nodes on the current page (Dev Mode only)
-- `edit_measurement` - Change a measurement's offset and/or label text (Dev Mode only)
-- `delete_measurement` - Delete a measurement from the current page (Dev Mode only)
-- `get_dev_resources` - List dev resources (links to code, docs, tickets) attached to a node, including inherited ones
-- `add_dev_resource` - Attach a dev resource link to a node
-- `edit_dev_resource` - Change the URL and/or name of a dev resource on a node
-- `delete_dev_resource` - Remove a dev resource from a node by URL
-
-The plugin manifest does not declare Dev Mode yet, so `add_measurement`, `edit_measurement` and `delete_measurement` currently fail outside Dev Mode.
+- `add_measurement` - Add a measurement between two nodes on the current page (Dev Mode only, paid plan)
+- `edit_measurement` - Change a measurement's offset and/or label text (Dev Mode only, paid plan)
+- `delete_measurement` - Delete a measurement from the current page (Dev Mode only, paid plan)
+- `get_dev_resources` - List dev resources (links to code, docs, tickets) attached to a node, including inherited ones (probably paid plan)
+- `add_dev_resource` - Attach a dev resource link to a node (probably paid plan)
+- `edit_dev_resource` - Change the URL and/or name of a dev resource on a node (probably paid plan)
+- `delete_dev_resource` - Remove a dev resource from a node by URL (probably paid plan)
 - `set_multiple_annotations` - Batch create/update multiple annotations efficiently
 - `scan_nodes_by_types` - Scan for nodes with specific types (useful for finding annotation targets)
 
@@ -346,7 +366,7 @@ The plugin manifest does not declare Dev Mode yet, so `add_measurement`, `edit_m
 - `bind_variable` - Bind (or unbind with `variableId: null`) a variable to fills/strokes, size, spacing, padding, corner radius, stroke weight, opacity, characters or visibility
 - `update_variable` - Update variable metadata: name, description, scopes, hiddenFromPublishing and code syntax (WEB/ANDROID/iOS)
 - `update_variable_collection` - Rename a variable collection or change whether it is hidden from publishing
-- `manage_variable_modes` - Add, rename or remove a mode of a variable collection (e.g. Light/Dark)
+- `manage_variable_modes` - Add, rename or remove a mode of a variable collection (e.g. Light/Dark); adding a mode needs a paid plan (Free: 1 mode per collection)
 - `set_variable_mode` - Set the explicit variable mode of a node for a collection (e.g. switch a frame to Dark mode); `clear: true` makes it inherit from its parent
 - `get_library_variable_collections` - List variable collections available from enabled team libraries (requires the plugin's `teamlibrary` permission)
 - `extend_library_collection` - Create an extended variable collection (inherits variables, allows overrides) from a library collection key or a local collection ID (Enterprise plan only)

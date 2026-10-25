@@ -38,6 +38,7 @@
     "build": "tsup",
     "prepare": "tsup",
     "build:watch": "tsup --watch",
+    "build:plugin-dev": "node scripts/build-dev-plugin.mjs",
     "dev": "bun run build:watch",
     "test": "bun test",
     "lint": "node scripts/check-plugin.mjs",
